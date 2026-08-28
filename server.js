@@ -1,12 +1,26 @@
 const http = require("http");
+const fs = require("fs");
+const path = require("path");
 const { extractFields } = require("./lib/claude");
-const { sendMessage, sendDocument, downloadLargestPhoto, setWebhook } = require("./lib/telegram");
+const { sendMessage, sendDocument, sendAnimation, downloadLargestPhoto, setWebhook } = require("./lib/telegram");
 const { buildDkp } = require("./lib/dkpTemplate");
+const { buildGibddForm } = require("./lib/gibddTemplate");
 
 // ---- простая машина состояний, по одной сессии на чат ----
 // (хранится в памяти процесса — при перезапуске сервера сбрасывается,
 //  для личного использования этого достаточно на первое время)
 const sessions = new Map();
+
+const ASSETS_DIR = path.join(__dirname, "assets");
+
+// Схематичные (не настоящие!) анимированные подсказки — какую часть
+// документа нужно сфотографировать. Один и тот же файл переиспользуется для
+// продавца и покупателя, т.к. тип документа один и тот же.
+const STEP_ASSETS = {
+  passport_main: "guide_passport_main.gif",
+  passport_registration: "guide_passport_reg.gif",
+  vehicle_doc: "guide_vehicle_doc.gif",
+};
 
 const STEPS = [
   { key: "seller_main", docType: "passport_main", target: "seller", prompt: "📄 <b>Шаг 1 из 7</b>\nПришлите фото разворота паспорта <b>ПРОДАВЦА</b> с фотографией (там же ФИО и дата рождения)." },
@@ -18,13 +32,41 @@ const STEPS = [
 const PRICE_PROMPT = "💰 <b>Шаг 6 из 7</b>\nНапишите сумму сделки в рублях — только цифры, например: <i>850000</i>";
 const CITY_PROMPT = "🏙️ <b>Шаг 7 из 7</b>\nТеперь напишите город, где составляется договор, например: <i>Челябинск</i>";
 
+const GIBDD_QUESTION =
+  "🚦 Договор готов. Сразу сформировать ещё и <b>заявление в ГИБДД</b>?\n\n" +
+  "Оно понадобится вместе с договором купли-продажи, чтобы поставить автомобиль на учёт — основные данные я впишу сам, останется дописать пару строк от руки прямо в отделении.";
+const GIBDD_KEYBOARD = {
+  keyboard: [[{ text: "✅ Да, сформировать" }, { text: "❌ Не нужно" }]],
+  resize_keyboard: true,
+  one_time_keyboard: true,
+};
+const REMOVE_KEYBOARD = { remove_keyboard: true };
+
 function newSession() {
   return {
     stepIndex: 0,
     seller: {}, buyer: {}, vehicle: {},
-    awaitingPrice: false, awaitingCity: false,
+    awaitingPrice: false, awaitingCity: false, awaitingGibddChoice: false,
     price: null, city: "",
   };
+}
+
+// Отправляет подсказку к шагу: гиф-иллюстрация с текстом в подписи, либо —
+// если файл иллюстрации почему-то недоступен — просто текстом, чтобы бот в
+// любом случае не сломался.
+async function sendStepGuide(chatId, step, prefix = "") {
+  const caption = `${prefix}${step.prompt}`;
+  const assetName = STEP_ASSETS[step.docType];
+  if (assetName) {
+    try {
+      const buffer = fs.readFileSync(path.join(ASSETS_DIR, assetName));
+      await sendAnimation(chatId, buffer, assetName, caption);
+      return;
+    } catch (e) {
+      console.error("guide asset unavailable:", assetName, e.message);
+    }
+  }
+  await sendMessage(chatId, caption);
 }
 
 async function handlePhoto(chatId, session, photoArray) {
@@ -43,7 +85,7 @@ async function handlePhoto(chatId, session, photoArray) {
     session.stepIndex += 1;
     const next = STEPS[session.stepIndex];
     if (next) {
-      await sendMessage(chatId, `✅ Готово.\n\n${next.prompt}`);
+      await sendStepGuide(chatId, next, "✅ Готово.\n\n");
     } else {
       session.awaitingPrice = true;
       await sendMessage(chatId, `✅ Все документы распознаны.\n\n${PRICE_PROMPT}`);
@@ -85,11 +127,52 @@ async function handleCity(chatId, session, text) {
       vehicle: session.vehicle,
     });
     await sendDocument(chatId, buffer, "dkp.docx", "📄 <b>Черновик договора готов</b>\nПроверьте все поля перед подписанием.");
-    sessions.delete(chatId);
   } catch (e) {
     console.error(e);
-    await sendMessage(chatId, "⚠️ Не получилось собрать документ. Напишите /new, чтобы попробовать заново.");
+    await sendMessage(chatId, "⚠️ Не получилось собрать договор. Напишите /new, чтобы попробовать заново.");
+    return;
   }
+
+  session.awaitingGibddChoice = true;
+  await sendMessage(chatId, GIBDD_QUESTION, GIBDD_KEYBOARD);
+}
+
+async function handleGibddChoice(chatId, session, text) {
+  const answer = (text || "").trim().toLowerCase();
+  const isYes = answer.includes("да");
+  const isNo = answer.includes("нет") || answer.includes("не нужно");
+
+  if (!isYes && !isNo) {
+    await sendMessage(chatId, "Не совсем понял ответ — выберите один из вариантов на клавиатуре: «Да, сформировать» или «Не нужно».", GIBDD_KEYBOARD);
+    return;
+  }
+
+  session.awaitingGibddChoice = false;
+
+  if (isNo) {
+    await sendMessage(chatId, "Хорошо, не формирую. Если понадобится позже — просто напишите /new и повторите сбор документов.", REMOVE_KEYBOARD);
+    sessions.delete(chatId);
+    return;
+  }
+
+  await sendMessage(chatId, "🚦 Собираю заявление...", REMOVE_KEYBOARD);
+  try {
+    const gibddBuffer = await buildGibddForm({
+      buyer: session.buyer,
+      vehicle: session.vehicle,
+    });
+    await sendDocument(
+      chatId,
+      gibddBuffer,
+      "zayavlenie_gibdd.docx",
+      "🚦 <b>Заявление в ГИБДД</b>\nОсновные данные заполнены автоматически. От руки впишите: наименование подразделения, при желании телефон/e-mail, а дату и подпись — прямо при подаче."
+    );
+  } catch (e) {
+    console.error(e);
+    await sendMessage(chatId, "⚠️ Заявление сформировать не получилось — можно заполнить его отдельно вручную.");
+  }
+
+  sessions.delete(chatId);
 }
 
 async function handleUpdate(body) {
@@ -103,9 +186,10 @@ async function handleUpdate(body) {
     await sendMessage(
       chatId,
       "🚗📄 <b>Договор купли-продажи автомобиля</b>\n\n" +
-        "Пришлите по очереди фото документов — я сам распознаю данные и соберу черновик ДКП, печатать вручную не нужно. Готовый файл обязательно проверьте перед подписанием.\n\n" +
-        STEPS[0].prompt
+        "Пришлите по очереди фото документов — я сам распознаю данные и соберу черновик ДКП, а по желанию — ещё и заявление в ГИБДД для постановки на учёт. Печатать вручную не нужно, но готовые файлы обязательно проверьте перед подписанием и подачей.\n\n" +
+        "К каждому шагу я буду присылать короткую подсказку-картинку, какую часть документа фотографировать."
     );
+    await sendStepGuide(chatId, STEPS[0]);
     return;
   }
   if (text === "/reset") {
@@ -126,8 +210,10 @@ async function handleUpdate(body) {
     await handlePrice(chatId, session, text);
   } else if (session.awaitingCity && text) {
     await handleCity(chatId, session, text);
+  } else if (session.awaitingGibddChoice && text) {
+    await handleGibddChoice(chatId, session, text);
   } else {
-    await sendMessage(chatId, "Пришлите, пожалуйста, фото документа (или сумму/город, если сейчас ожидается это).");
+    await sendMessage(chatId, "Пришлите, пожалуйста, фото документа (или ответ, если сейчас ожидается сумма/город/выбор по заявлению).");
   }
 }
 

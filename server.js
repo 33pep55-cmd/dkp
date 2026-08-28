@@ -9,16 +9,22 @@ const { buildDkp } = require("./lib/dkpTemplate");
 const sessions = new Map();
 
 const STEPS = [
-  { key: "seller_main", docType: "passport_main", target: "seller", prompt: "📄 <b>Шаг 1 из 6</b>\nПришлите фото разворота паспорта <b>ПРОДАВЦА</b> с фотографией (там же ФИО и дата рождения)." },
-  { key: "seller_reg", docType: "passport_registration", target: "seller", prompt: "📍 <b>Шаг 2 из 6</b>\nТеперь пришлите разворот паспорта <b>ПРОДАВЦА</b> со штампом регистрации (пропиской)." },
-  { key: "buyer_main", docType: "passport_main", target: "buyer", prompt: "📄 <b>Шаг 3 из 6</b>\nПришлите фото разворота паспорта <b>ПОКУПАТЕЛЯ</b> с фотографией." },
-  { key: "buyer_reg", docType: "passport_registration", target: "buyer", prompt: "📍 <b>Шаг 4 из 6</b>\nТеперь пришлите разворот паспорта <b>ПОКУПАТЕЛЯ</b> со штампом регистрации." },
-  { key: "vehicle", docType: "vehicle_doc", target: "vehicle", prompt: "🚗 <b>Шаг 5 из 6</b>\nИ последнее фото — СТС или ПТС на автомобиль." },
+  { key: "seller_main", docType: "passport_main", target: "seller", prompt: "📄 <b>Шаг 1 из 7</b>\nПришлите фото разворота паспорта <b>ПРОДАВЦА</b> с фотографией (там же ФИО и дата рождения)." },
+  { key: "seller_reg", docType: "passport_registration", target: "seller", prompt: "📍 <b>Шаг 2 из 7</b>\nТеперь пришлите разворот паспорта <b>ПРОДАВЦА</b> со штампом регистрации (пропиской)." },
+  { key: "buyer_main", docType: "passport_main", target: "buyer", prompt: "📄 <b>Шаг 3 из 7</b>\nПришлите фото разворота паспорта <b>ПОКУПАТЕЛЯ</b> с фотографией." },
+  { key: "buyer_reg", docType: "passport_registration", target: "buyer", prompt: "📍 <b>Шаг 4 из 7</b>\nТеперь пришлите разворот паспорта <b>ПОКУПАТЕЛЯ</b> со штампом регистрации." },
+  { key: "vehicle", docType: "vehicle_doc", target: "vehicle", prompt: "🚗 <b>Шаг 5 из 7</b>\nИ последнее фото — СТС или ПТС на автомобиль." },
 ];
-const TEXT_STEP_PROMPT = "✍️ <b>Шаг 6 из 6</b>\nНапишите одним сообщением город и сумму сделки через запятую, например: <i>Челябинск, 850000</i>";
+const PRICE_PROMPT = "💰 <b>Шаг 6 из 7</b>\nНапишите сумму сделки в рублях — только цифры, например: <i>850000</i>";
+const CITY_PROMPT = "🏙️ <b>Шаг 7 из 7</b>\nТеперь напишите город, где составляется договор, например: <i>Челябинск</i>";
 
 function newSession() {
-  return { stepIndex: 0, seller: {}, buyer: {}, vehicle: {}, awaitingText: false };
+  return {
+    stepIndex: 0,
+    seller: {}, buyer: {}, vehicle: {},
+    awaitingPrice: false, awaitingCity: false,
+    price: null, city: "",
+  };
 }
 
 async function handlePhoto(chatId, session, photoArray) {
@@ -39,8 +45,8 @@ async function handlePhoto(chatId, session, photoArray) {
     if (next) {
       await sendMessage(chatId, `✅ Готово.\n\n${next.prompt}`);
     } else {
-      session.awaitingText = true;
-      await sendMessage(chatId, `✅ Все документы распознаны.\n\n${TEXT_STEP_PROMPT}`);
+      session.awaitingPrice = true;
+      await sendMessage(chatId, `✅ Все документы распознаны.\n\n${PRICE_PROMPT}`);
     }
   } catch (e) {
     console.error(e);
@@ -48,17 +54,32 @@ async function handlePhoto(chatId, session, photoArray) {
   }
 }
 
-async function handleText(chatId, session, text) {
-  const [cityRaw, priceRaw] = text.split(",");
-  const city = (cityRaw || "").trim() || "____________";
-  const priceDigits = parseInt((priceRaw || "").replace(/[^\d]/g, ""), 10);
-  const price = Number.isFinite(priceDigits) && priceDigits > 0 ? priceDigits : null;
+async function handlePrice(chatId, session, text) {
+  const digits = parseInt((text || "").replace(/[^\d]/g, ""), 10);
+  if (!Number.isFinite(digits) || digits <= 0) {
+    await sendMessage(chatId, "⚠️ Не получилось распознать сумму — пришлите, пожалуйста, только цифры, например: 850000");
+    return;
+  }
+  session.price = digits;
+  session.awaitingPrice = false;
+  session.awaitingCity = true;
+  await sendMessage(chatId, `✅ Принято: ${digits.toLocaleString("ru-RU")} ₽\n\n${CITY_PROMPT}`);
+}
+
+async function handleCity(chatId, session, text) {
+  const city = (text || "").trim();
+  if (!city) {
+    await sendMessage(chatId, "⚠️ Напишите, пожалуйста, название города.");
+    return;
+  }
+  session.city = city;
+  session.awaitingCity = false;
   const date = new Date().toLocaleDateString("ru-RU");
 
   await sendMessage(chatId, "🧾 Собираю договор...");
   try {
     const buffer = await buildDkp({
-      city, date, price,
+      city: session.city, date, price: session.price,
       seller: session.seller,
       buyer: session.buyer,
       vehicle: session.vehicle,
@@ -101,10 +122,12 @@ async function handleUpdate(body) {
 
   if (msg.photo) {
     await handlePhoto(chatId, session, msg.photo);
-  } else if (session.awaitingText && text) {
-    await handleText(chatId, session, text);
+  } else if (session.awaitingPrice && text) {
+    await handlePrice(chatId, session, text);
+  } else if (session.awaitingCity && text) {
+    await handleCity(chatId, session, text);
   } else {
-    await sendMessage(chatId, "Пришлите, пожалуйста, фото документа (или текст на шаге 6).");
+    await sendMessage(chatId, "Пришлите, пожалуйста, фото документа (или сумму/город, если сейчас ожидается это).");
   }
 }
 

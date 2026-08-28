@@ -51,7 +51,8 @@ async function handlePhoto(chatId, session, photoArray) {
 async function handleText(chatId, session, text) {
   const [cityRaw, priceRaw] = text.split(",");
   const city = (cityRaw || "").trim() || "____________";
-  const price = (priceRaw || "").trim() || "____________";
+  const priceDigits = parseInt((priceRaw || "").replace(/[^\d]/g, ""), 10);
+  const price = Number.isFinite(priceDigits) && priceDigits > 0 ? priceDigits : null;
   const date = new Date().toLocaleDateString("ru-RU");
 
   await sendMessage(chatId, "🧾 Собираю договор...");

@@ -1,5 +1,3 @@
-
-Server · JS
 const http = require("http");
 const { extractFields } = require("./lib/claude");
 const { sendMessage, sendDocument, downloadLargestPhoto, setWebhook } = require("./lib/telegram");

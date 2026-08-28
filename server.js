@@ -80,6 +80,19 @@ async function handlePhoto(chatId, session, photoArray) {
   try {
     const { base64, mimeType } = await downloadLargestPhoto(photoArray);
     const fields = await extractFields(step.docType, base64, mimeType);
+
+    // Адрес регистрации — обязательное поле для договора. Если модель не
+    // смогла уверенно прочитать штамп, она честно вернула "" (см. lib/claude.js:
+    // "не выдумывай значения") — вместо того, чтобы молча продолжать с пустым
+    // адресом в договоре, просим переснять именно этот штамп.
+    if (step.docType === "passport_registration" && !(fields.address || "").trim()) {
+      await sendMessage(
+        chatId,
+        "⚠️ Не получилось разобрать адрес регистрации на этом фото. Переснимите штамп прописки покрупнее, при хорошем освещении и без бликов, и пришлите ещё раз."
+      );
+      return;
+    }
+
     Object.assign(session[step.target], fields);
 
     session.stepIndex += 1;

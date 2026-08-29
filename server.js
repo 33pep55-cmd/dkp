@@ -5,6 +5,7 @@ const { extractFields } = require("./lib/claude");
 const { sendMessage, sendDocument, sendAnimation, downloadLargestPhoto, setWebhook } = require("./lib/telegram");
 const { buildDkp } = require("./lib/dkpTemplate");
 const { buildGibddForm } = require("./lib/gibddTemplate");
+const { formatSnils, parseSnilsInnText } = require("./lib/snils");
 
 // ---- простая машина состояний, по одной сессии на чат ----
 // (хранится в памяти процесса — при перезапуске сервера сбрасывается,
@@ -20,17 +21,25 @@ const STEP_ASSETS = {
   passport_main: "guide_passport_main.gif",
   passport_registration: "guide_passport_reg.gif",
   vehicle_doc: "guide_vehicle_doc.gif",
+  snils_inn: "guide_snils_inn.gif",
 };
 
+const INTRO =
+  "🚗📄 <b>Договор купли-продажи автомобиля</b>\n\n" +
+  "Пришлите по очереди фото документов — я сам распознаю данные и соберу черновик ДКП, а по желанию — ещё и заявление в ГИБДД для постановки на учёт. Печатать вручную не нужно, но готовые файлы обязательно проверьте перед подписанием и подачей.\n\n" +
+  "К каждому шагу я буду присылать короткую подсказку-картинку, какую часть документа фотографировать.\n\n";
+
 const STEPS = [
-  { key: "seller_main", docType: "passport_main", target: "seller", prompt: "📄 <b>Шаг 1 из 7</b>\nПришлите фото разворота паспорта <b>ПРОДАВЦА</b> с фотографией (там же ФИО и дата рождения)." },
-  { key: "seller_reg", docType: "passport_registration", target: "seller", prompt: "📍 <b>Шаг 2 из 7</b>\nТеперь пришлите разворот паспорта <b>ПРОДАВЦА</b> со штампом регистрации (пропиской)." },
-  { key: "buyer_main", docType: "passport_main", target: "buyer", prompt: "📄 <b>Шаг 3 из 7</b>\nПришлите фото разворота паспорта <b>ПОКУПАТЕЛЯ</b> с фотографией." },
-  { key: "buyer_reg", docType: "passport_registration", target: "buyer", prompt: "📍 <b>Шаг 4 из 7</b>\nТеперь пришлите разворот паспорта <b>ПОКУПАТЕЛЯ</b> со штампом регистрации." },
-  { key: "vehicle", docType: "vehicle_doc", target: "vehicle", prompt: "🚗 <b>Шаг 5 из 7</b>\nИ последнее фото — СТС или ПТС на автомобиль." },
+  { key: "seller_main", docType: "passport_main", target: "seller", prompt: "📄 <b>Шаг 1 из 9</b>\nПришлите фото разворота паспорта <b>ПРОДАВЦА</b> с фотографией (там же ФИО и дата рождения)." },
+  { key: "seller_reg", docType: "passport_registration", target: "seller", prompt: "📍 <b>Шаг 2 из 9</b>\nТеперь пришлите разворот паспорта <b>ПРОДАВЦА</b> со штампом регистрации (пропиской)." },
+  { key: "buyer_main", docType: "passport_main", target: "buyer", prompt: "📄 <b>Шаг 3 из 9</b>\nПришлите фото разворота паспорта <b>ПОКУПАТЕЛЯ</b> с фотографией." },
+  { key: "buyer_reg", docType: "passport_registration", target: "buyer", prompt: "📍 <b>Шаг 4 из 9</b>\nТеперь пришлите разворот паспорта <b>ПОКУПАТЕЛЯ</b> со штампом регистрации." },
+  { key: "vehicle", docType: "vehicle_doc", target: "vehicle", prompt: "🚗 <b>Шаг 5 из 9</b>\nИ последнее фото — СТС или ПТС на автомобиль." },
 ];
-const PRICE_PROMPT = "💰 <b>Шаг 6 из 7</b>\nНапишите сумму сделки в рублях — только цифры, например: <i>850000</i>";
-const CITY_PROMPT = "🏙️ <b>Шаг 7 из 7</b>\nТеперь напишите город, где составляется договор, например: <i>Челябинск</i>";
+const SELLER_PHONE_PROMPT = "📞 <b>Шаг 6 из 9</b>\nНапишите номер телефона <b>ПРОДАВЦА</b>, например: <i>+7 900 123-45-67</i>";
+const BUYER_PHONE_PROMPT = "📞 <b>Шаг 7 из 9</b>\nТеперь напишите номер телефона <b>ПОКУПАТЕЛЯ</b> — именно он будет ставить автомобиль на учёт, поэтому этот номер также попадёт в заявление в ГИБДД.";
+const PRICE_PROMPT = "💰 <b>Шаг 8 из 9</b>\nНапишите сумму сделки в рублях — только цифры, например: <i>850000</i>";
+const CITY_PROMPT = "🏙️ <b>Шаг 9 из 9</b>\nТеперь напишите город, где составляется договор, например: <i>Челябинск</i>";
 
 const GIBDD_QUESTION =
   "🚦 Договор готов. Сразу сформировать ещё и <b>заявление в ГИБДД</b>?\n\n" +
@@ -42,31 +51,41 @@ const GIBDD_KEYBOARD = {
 };
 const REMOVE_KEYBOARD = { remove_keyboard: true };
 
+const SNILS_INN_PROMPT =
+  "🪪 Пришлите фото СНИЛС и/или документа с ИНН <b>покупателя</b> — можно один документ или оба по очереди.\n\n" +
+  "Либо просто напишите номера текстом в одном сообщении, например: <i>123-456-789 00, ИНН 500100200300</i>\n\n" +
+  "Если этих данных под рукой нет — напишите «пропустить», заявление сформируется без них (эти поля можно дописать от руки).";
+
 function newSession() {
   return {
     stepIndex: 0,
     seller: {}, buyer: {}, vehicle: {},
-    awaitingPrice: false, awaitingCity: false, awaitingGibddChoice: false,
+    awaitingSellerPhone: false, awaitingBuyerPhone: false,
+    awaitingPrice: false, awaitingCity: false,
+    awaitingGibddChoice: false, awaitingSnilsInn: false,
     price: null, city: "",
   };
 }
 
-// Отправляет подсказку к шагу: гиф-иллюстрация с текстом в подписи, либо —
-// если файл иллюстрации почему-то недоступен — просто текстом, чтобы бот в
-// любом случае не сломался.
-async function sendStepGuide(chatId, step, prefix = "") {
-  const caption = `${prefix}${step.prompt}`;
-  const assetName = STEP_ASSETS[step.docType];
+// Отправляет гиф-иллюстрацию с текстом в подписи, либо — если файл
+// иллюстрации почему-то недоступен — просто текстом, чтобы бот в любом
+// случае не сломался.
+async function sendGuideAnimation(chatId, assetName, caption, replyMarkup) {
   if (assetName) {
     try {
       const buffer = fs.readFileSync(path.join(ASSETS_DIR, assetName));
-      await sendAnimation(chatId, buffer, assetName, caption);
+      await sendAnimation(chatId, buffer, assetName, caption, replyMarkup);
       return;
     } catch (e) {
       console.error("guide asset unavailable:", assetName, e.message);
     }
   }
-  await sendMessage(chatId, caption);
+  await sendMessage(chatId, caption, replyMarkup);
+}
+
+async function sendStepGuide(chatId, step, prefix = "") {
+  const caption = `${prefix}${step.prompt}`;
+  await sendGuideAnimation(chatId, STEP_ASSETS[step.docType], caption);
 }
 
 async function handlePhoto(chatId, session, photoArray) {
@@ -100,13 +119,44 @@ async function handlePhoto(chatId, session, photoArray) {
     if (next) {
       await sendStepGuide(chatId, next, "✅ Готово.\n\n");
     } else {
-      session.awaitingPrice = true;
-      await sendMessage(chatId, `✅ Все документы распознаны.\n\n${PRICE_PROMPT}`);
+      session.awaitingSellerPhone = true;
+      await sendMessage(chatId, `✅ Все документы распознаны.\n\n${SELLER_PHONE_PROMPT}`);
     }
   } catch (e) {
     console.error(e);
     await sendMessage(chatId, "⚠️ Не получилось распознать фото — попробуйте переснять чуть чётче (при дневном свете, без бликов) и прислать ещё раз.");
   }
+}
+
+function extractPhone(text) {
+  const trimmed = (text || "").trim();
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.length < 10) return "";
+  return trimmed;
+}
+
+async function handleSellerPhone(chatId, session, text) {
+  const phone = extractPhone(text);
+  if (!phone) {
+    await sendMessage(chatId, "⚠️ Не получилось распознать номер телефона — пришлите, пожалуйста, номер продавца ещё раз, например: +7 900 123-45-67");
+    return;
+  }
+  session.seller.phone = phone;
+  session.awaitingSellerPhone = false;
+  session.awaitingBuyerPhone = true;
+  await sendMessage(chatId, `✅ Принято.\n\n${BUYER_PHONE_PROMPT}`);
+}
+
+async function handleBuyerPhone(chatId, session, text) {
+  const phone = extractPhone(text);
+  if (!phone) {
+    await sendMessage(chatId, "⚠️ Не получилось распознать номер телефона — пришлите, пожалуйста, номер покупателя ещё раз, например: +7 900 123-45-67");
+    return;
+  }
+  session.buyer.phone = phone;
+  session.awaitingBuyerPhone = false;
+  session.awaitingPrice = true;
+  await sendMessage(chatId, `✅ Принято.\n\n${PRICE_PROMPT}`);
 }
 
 async function handlePrice(chatId, session, text) {
@@ -168,7 +218,12 @@ async function handleGibddChoice(chatId, session, text) {
     return;
   }
 
-  await sendMessage(chatId, "🚦 Собираю заявление...", REMOVE_KEYBOARD);
+  session.awaitingSnilsInn = true;
+  await sendGuideAnimation(chatId, STEP_ASSETS.snils_inn, SNILS_INN_PROMPT, REMOVE_KEYBOARD);
+}
+
+async function finalizeGibddForm(chatId, session) {
+  await sendMessage(chatId, "🚦 Собираю заявление...");
   try {
     const gibddBuffer = await buildGibddForm({
       buyer: session.buyer,
@@ -178,7 +233,7 @@ async function handleGibddChoice(chatId, session, text) {
       chatId,
       gibddBuffer,
       "zayavlenie_gibdd.docx",
-      "🚦 <b>Заявление в ГИБДД</b>\nОсновные данные заполнены автоматически. От руки впишите: наименование подразделения, при желании телефон/e-mail, а дату и подпись — прямо при подаче."
+      "🚦 <b>Заявление в ГИБДД</b>\nОсновные данные заполнены автоматически. От руки впишите: наименование подразделения, при желании e-mail, а дату и подпись — прямо при подаче."
     );
   } catch (e) {
     console.error(e);
@@ -186,6 +241,55 @@ async function handleGibddChoice(chatId, session, text) {
   }
 
   sessions.delete(chatId);
+}
+
+async function handleSnilsInnText(chatId, session, text) {
+  const trimmed = (text || "").trim().toLowerCase();
+  if (trimmed === "пропустить" || trimmed === "нет" || trimmed === "-") {
+    await finalizeGibddForm(chatId, session);
+    return;
+  }
+
+  const { snils, inn } = parseSnilsInnText(text);
+  if (!snils && !inn) {
+    await sendMessage(
+      chatId,
+      "⚠️ Не получилось распознать номер. Пришлите СНИЛС и/или ИНН текстом (например: 123-456-789 00, ИНН 500100200300), фото документа, либо напишите «пропустить»."
+    );
+    return;
+  }
+
+  if (snils) session.buyer.snils = snils;
+  if (inn) session.buyer.inn = inn;
+  session.awaitingSnilsInn = false;
+  await finalizeGibddForm(chatId, session);
+}
+
+async function handleSnilsInnPhoto(chatId, session, photoArray) {
+  await sendMessage(chatId, "🔍 Распознаю фото, минутку...");
+  try {
+    const { base64, mimeType } = await downloadLargestPhoto(photoArray);
+    const fields = await extractFields("snils_inn", base64, mimeType);
+
+    const snilsDigits = (fields.snils || "").replace(/\D/g, "");
+    if (snilsDigits.length === 11) session.buyer.snils = formatSnils(snilsDigits);
+    const innDigits = (fields.inn || "").replace(/\D/g, "");
+    if (innDigits.length === 10 || innDigits.length === 12) session.buyer.inn = innDigits;
+
+    if (!session.buyer.snils && !session.buyer.inn) {
+      await sendMessage(
+        chatId,
+        "⚠️ На фото не удалось разобрать ни СНИЛС, ни ИНН. Попробуйте переснять чётче, пришлите другое фото, введите номера текстом, либо напишите «пропустить»."
+      );
+      return;
+    }
+
+    session.awaitingSnilsInn = false;
+    await finalizeGibddForm(chatId, session);
+  } catch (e) {
+    console.error(e);
+    await sendMessage(chatId, "⚠️ Не получилось распознать фото — попробуйте переснять чуть чётче и прислать ещё раз, введите номера текстом, либо напишите «пропустить».");
+  }
 }
 
 async function handleUpdate(body) {
@@ -196,13 +300,7 @@ async function handleUpdate(body) {
 
   if (text === "/start" || text === "/new") {
     sessions.set(chatId, newSession());
-    await sendMessage(
-      chatId,
-      "🚗📄 <b>Договор купли-продажи автомобиля</b>\n\n" +
-        "Пришлите по очереди фото документов — я сам распознаю данные и соберу черновик ДКП, а по желанию — ещё и заявление в ГИБДД для постановки на учёт. Печатать вручную не нужно, но готовые файлы обязательно проверьте перед подписанием и подачей.\n\n" +
-        "К каждому шагу я буду присылать короткую подсказку-картинку, какую часть документа фотографировать."
-    );
-    await sendStepGuide(chatId, STEPS[0]);
+    await sendStepGuide(chatId, STEPS[0], INTRO);
     return;
   }
   if (text === "/reset") {
@@ -217,8 +315,16 @@ async function handleUpdate(body) {
     return;
   }
 
-  if (msg.photo) {
+  if (session.awaitingSnilsInn && msg.photo) {
+    await handleSnilsInnPhoto(chatId, session, msg.photo);
+  } else if (session.awaitingSnilsInn && text) {
+    await handleSnilsInnText(chatId, session, text);
+  } else if (msg.photo) {
     await handlePhoto(chatId, session, msg.photo);
+  } else if (session.awaitingSellerPhone && text) {
+    await handleSellerPhone(chatId, session, text);
+  } else if (session.awaitingBuyerPhone && text) {
+    await handleBuyerPhone(chatId, session, text);
   } else if (session.awaitingPrice && text) {
     await handlePrice(chatId, session, text);
   } else if (session.awaitingCity && text) {
@@ -226,7 +332,7 @@ async function handleUpdate(body) {
   } else if (session.awaitingGibddChoice && text) {
     await handleGibddChoice(chatId, session, text);
   } else {
-    await sendMessage(chatId, "Пришлите, пожалуйста, фото документа (или ответ, если сейчас ожидается сумма/город/выбор по заявлению).");
+    await sendMessage(chatId, "Пришлите, пожалуйста, фото документа (или ответ, если сейчас ожидается телефон/сумма/город/выбор по заявлению).");
   }
 }
 

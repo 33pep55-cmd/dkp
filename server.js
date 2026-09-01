@@ -1,3 +1,5 @@
+
+Server · JS
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
@@ -6,14 +8,14 @@ const { sendMessage, sendDocument, sendAnimation, downloadLargestPhoto, setWebho
 const { buildDkp } = require("./lib/dkpTemplate");
 const { buildGibddForm } = require("./lib/gibddTemplate");
 const { formatSnils, parseSnilsInnText } = require("./lib/snils");
-
+ 
 // ---- простая машина состояний, по одной сессии на чат ----
 // (хранится в памяти процесса — при перезапуске сервера сбрасывается,
 //  для личного использования этого достаточно на первое время)
 const sessions = new Map();
-
+ 
 const ASSETS_DIR = path.join(__dirname, "assets");
-
+ 
 // Схематичные (не настоящие!) анимированные подсказки — какую часть
 // документа нужно сфотографировать. Один и тот же файл переиспользуется для
 // продавца и покупателя, т.к. тип документа один и тот же.
@@ -21,14 +23,15 @@ const STEP_ASSETS = {
   passport_main: "guide_passport_main.gif",
   passport_registration: "guide_passport_reg.gif",
   vehicle_doc: "guide_vehicle_doc.gif",
-  snils_inn: "guide_snils_inn.gif",
+  inn: "guide_inn.gif",
+  snils: "guide_snils.gif",
 };
-
+ 
 const INTRO =
   "🚗📄 <b>Договор купли-продажи автомобиля</b>\n\n" +
   "Пришлите по очереди фото документов — я сам распознаю данные и соберу черновик ДКП, а по желанию — ещё и заявление в ГИБДД для постановки на учёт. Печатать вручную не нужно, но готовые файлы обязательно проверьте перед подписанием и подачей.\n\n" +
   "К каждому шагу я буду присылать короткую подсказку-картинку, какую часть документа фотографировать.\n\n";
-
+ 
 const STEPS = [
   { key: "seller_main", docType: "passport_main", target: "seller", prompt: "📄 <b>Шаг 1 из 9</b>\nПришлите фото разворота паспорта <b>ПРОДАВЦА</b> с фотографией (там же ФИО и дата рождения)." },
   { key: "seller_reg", docType: "passport_registration", target: "seller", prompt: "📍 <b>Шаг 2 из 9</b>\nТеперь пришлите разворот паспорта <b>ПРОДАВЦА</b> со штампом регистрации (пропиской)." },
@@ -40,7 +43,7 @@ const SELLER_PHONE_PROMPT = "📞 <b>Шаг 6 из 9</b>\nНапишите но�
 const BUYER_PHONE_PROMPT = "📞 <b>Шаг 7 из 9</b>\nТеперь напишите номер телефона <b>ПОКУПАТЕЛЯ</b> — именно он будет ставить автомобиль на учёт, поэтому этот номер также попадёт в заявление в ГИБДД.";
 const PRICE_PROMPT = "💰 <b>Шаг 8 из 9</b>\nНапишите сумму сделки в рублях — только цифры, например: <i>850000</i>";
 const CITY_PROMPT = "🏙️ <b>Шаг 9 из 9</b>\nТеперь напишите город, где составляется договор, например: <i>Челябинск</i>";
-
+ 
 const GIBDD_QUESTION =
   "🚦 Договор готов. Сразу сформировать ещё и <b>заявление в ГИБДД</b>?\n\n" +
   "Оно понадобится вместе с договором купли-продажи, чтобы поставить автомобиль на учёт — основные данные я впишу сам, останется дописать пару строк от руки прямо в отделении.";
@@ -50,23 +53,25 @@ const GIBDD_KEYBOARD = {
   one_time_keyboard: true,
 };
 const REMOVE_KEYBOARD = { remove_keyboard: true };
-
-const SNILS_INN_PROMPT =
-  "🪪 Пришлите фото СНИЛС и/или документа с ИНН <b>покупателя</b> — можно один документ или оба по очереди.\n\n" +
-  "Либо просто напишите номера текстом в одном сообщении, например: <i>123-456-789 00, ИНН 500100200300</i>\n\n" +
-  "Если этих данных под рукой нет — напишите «пропустить», заявление сформируется без них (эти поля можно дописать от руки).";
-
+ 
+const INN_PROMPT =
+  "🪪 Пришлите фото документа с ИНН <b>покупателя</b> (свидетельство или справка ФНС) — либо просто напишите номер текстом.\n\n" +
+  "Если под рукой нет — напишите «пропустить», это поле можно дописать от руки.";
+const SNILS_PROMPT =
+  "🪪 Теперь пришлите фото СНИЛС <b>покупателя</b> (зелёная карточка или справка СФР) — либо напишите номер текстом.\n\n" +
+  "Если под рукой нет — напишите «пропустить».";
+ 
 function newSession() {
   return {
     stepIndex: 0,
     seller: {}, buyer: {}, vehicle: {},
     awaitingSellerPhone: false, awaitingBuyerPhone: false,
     awaitingPrice: false, awaitingCity: false,
-    awaitingGibddChoice: false, awaitingSnilsInn: false,
+    awaitingGibddChoice: false, awaitingInn: false, awaitingSnils: false,
     price: null, city: "",
   };
 }
-
+ 
 // Отправляет гиф-иллюстрацию с текстом в подписи, либо — если файл
 // иллюстрации почему-то недоступен — просто текстом, чтобы бот в любом
 // случае не сломался.
@@ -82,24 +87,24 @@ async function sendGuideAnimation(chatId, assetName, caption, replyMarkup) {
   }
   await sendMessage(chatId, caption, replyMarkup);
 }
-
+ 
 async function sendStepGuide(chatId, step, prefix = "") {
   const caption = `${prefix}${step.prompt}`;
   await sendGuideAnimation(chatId, STEP_ASSETS[step.docType], caption);
 }
-
+ 
 async function handlePhoto(chatId, session, photoArray) {
   const step = STEPS[session.stepIndex];
   if (!step) {
     await sendMessage(chatId, "Все фото уже собраны — напишите /new, чтобы начать новую сделку.");
     return;
   }
-
+ 
   await sendMessage(chatId, "🔍 Распознаю фото, минутку...");
   try {
     const { base64, mimeType } = await downloadLargestPhoto(photoArray);
     const fields = await extractFields(step.docType, base64, mimeType);
-
+ 
     // Адрес регистрации — обязательное поле для договора. Если модель не
     // смогла уверенно прочитать штамп, она честно вернула "" (см. lib/claude.js:
     // "не выдумывай значения") — вместо того, чтобы молча продолжать с пустым
@@ -111,9 +116,9 @@ async function handlePhoto(chatId, session, photoArray) {
       );
       return;
     }
-
+ 
     Object.assign(session[step.target], fields);
-
+ 
     session.stepIndex += 1;
     const next = STEPS[session.stepIndex];
     if (next) {
@@ -127,14 +132,14 @@ async function handlePhoto(chatId, session, photoArray) {
     await sendMessage(chatId, "⚠️ Не получилось распознать фото — попробуйте переснять чуть чётче (при дневном свете, без бликов) и прислать ещё раз.");
   }
 }
-
+ 
 function extractPhone(text) {
   const trimmed = (text || "").trim();
   const digits = trimmed.replace(/\D/g, "");
   if (digits.length < 10) return "";
   return trimmed;
 }
-
+ 
 async function handleSellerPhone(chatId, session, text) {
   const phone = extractPhone(text);
   if (!phone) {
@@ -146,7 +151,7 @@ async function handleSellerPhone(chatId, session, text) {
   session.awaitingBuyerPhone = true;
   await sendMessage(chatId, `✅ Принято.\n\n${BUYER_PHONE_PROMPT}`);
 }
-
+ 
 async function handleBuyerPhone(chatId, session, text) {
   const phone = extractPhone(text);
   if (!phone) {
@@ -158,7 +163,7 @@ async function handleBuyerPhone(chatId, session, text) {
   session.awaitingPrice = true;
   await sendMessage(chatId, `✅ Принято.\n\n${PRICE_PROMPT}`);
 }
-
+ 
 async function handlePrice(chatId, session, text) {
   const digits = parseInt((text || "").replace(/[^\d]/g, ""), 10);
   if (!Number.isFinite(digits) || digits <= 0) {
@@ -170,7 +175,7 @@ async function handlePrice(chatId, session, text) {
   session.awaitingCity = true;
   await sendMessage(chatId, `✅ Принято: ${digits.toLocaleString("ru-RU")} ₽\n\n${CITY_PROMPT}`);
 }
-
+ 
 async function handleCity(chatId, session, text) {
   const city = (text || "").trim();
   if (!city) {
@@ -180,7 +185,7 @@ async function handleCity(chatId, session, text) {
   session.city = city;
   session.awaitingCity = false;
   const date = new Date().toLocaleDateString("ru-RU");
-
+ 
   await sendMessage(chatId, "🧾 Собираю договор...");
   try {
     const buffer = await buildDkp({
@@ -195,33 +200,33 @@ async function handleCity(chatId, session, text) {
     await sendMessage(chatId, "⚠️ Не получилось собрать договор. Напишите /new, чтобы попробовать заново.");
     return;
   }
-
+ 
   session.awaitingGibddChoice = true;
   await sendMessage(chatId, GIBDD_QUESTION, GIBDD_KEYBOARD);
 }
-
+ 
 async function handleGibddChoice(chatId, session, text) {
   const answer = (text || "").trim().toLowerCase();
   const isYes = answer.includes("да");
   const isNo = answer.includes("нет") || answer.includes("не нужно");
-
+ 
   if (!isYes && !isNo) {
     await sendMessage(chatId, "Не совсем понял ответ — выберите один из вариантов на клавиатуре: «Да, сформировать» или «Не нужно».", GIBDD_KEYBOARD);
     return;
   }
-
+ 
   session.awaitingGibddChoice = false;
-
+ 
   if (isNo) {
     await sendMessage(chatId, "Хорошо, не формирую. Если понадобится позже — просто напишите /new и повторите сбор документов.", REMOVE_KEYBOARD);
     sessions.delete(chatId);
     return;
   }
-
-  session.awaitingSnilsInn = true;
-  await sendGuideAnimation(chatId, STEP_ASSETS.snils_inn, SNILS_INN_PROMPT, REMOVE_KEYBOARD);
+ 
+  session.awaitingInn = true;
+  await sendGuideAnimation(chatId, STEP_ASSETS.inn, INN_PROMPT, REMOVE_KEYBOARD);
 }
-
+ 
 async function finalizeGibddForm(chatId, session) {
   await sendMessage(chatId, "🚦 Собираю заявление...");
   try {
@@ -239,65 +244,115 @@ async function finalizeGibddForm(chatId, session) {
     console.error(e);
     await sendMessage(chatId, "⚠️ Заявление сформировать не получилось — можно заполнить его отдельно вручную.");
   }
-
+ 
   sessions.delete(chatId);
 }
-
-async function handleSnilsInnText(chatId, session, text) {
-  const trimmed = (text || "").trim().toLowerCase();
-  if (trimmed === "пропустить" || trimmed === "нет" || trimmed === "-") {
-    await finalizeGibddForm(chatId, session);
-    return;
-  }
-
-  const { snils, inn } = parseSnilsInnText(text);
-  if (!snils && !inn) {
-    await sendMessage(
-      chatId,
-      "⚠️ Не получилось распознать номер. Пришлите СНИЛС и/или ИНН текстом (например: 123-456-789 00, ИНН 500100200300), фото документа, либо напишите «пропустить»."
-    );
-    return;
-  }
-
-  if (snils) session.buyer.snils = snils;
-  if (inn) session.buyer.inn = inn;
-  session.awaitingSnilsInn = false;
-  await finalizeGibddForm(chatId, session);
-}
-
-async function handleSnilsInnPhoto(chatId, session, photoArray) {
+ 
+// ---- Шаг ИНН ----
+ 
+async function handleInnPhoto(chatId, session, photoArray) {
   await sendMessage(chatId, "🔍 Распознаю фото, минутку...");
   try {
     const { base64, mimeType } = await downloadLargestPhoto(photoArray);
-    const fields = await extractFields("snils_inn", base64, mimeType);
-
-    const snilsDigits = (fields.snils || "").replace(/\D/g, "");
-    if (snilsDigits.length === 11) session.buyer.snils = formatSnils(snilsDigits);
+    const fields = await extractFields("inn", base64, mimeType);
     const innDigits = (fields.inn || "").replace(/\D/g, "");
-    if (innDigits.length === 10 || innDigits.length === 12) session.buyer.inn = innDigits;
-
-    if (!session.buyer.snils && !session.buyer.inn) {
+ 
+    if (innDigits.length !== 10 && innDigits.length !== 12) {
       await sendMessage(
         chatId,
-        "⚠️ На фото не удалось разобрать ни СНИЛС, ни ИНН. Попробуйте переснять чётче, пришлите другое фото, введите номера текстом, либо напишите «пропустить»."
+        "⚠️ Не получилось разобрать ИНН на этом фото. Попробуйте переснять чётче, введите номер текстом, либо напишите «пропустить»."
       );
       return;
     }
-
-    session.awaitingSnilsInn = false;
+ 
+    session.buyer.inn = innDigits;
+    session.awaitingInn = false;
+    session.awaitingSnils = true;
+    await sendGuideAnimation(chatId, STEP_ASSETS.snils, `✅ Принято.\n\n${SNILS_PROMPT}`);
+  } catch (e) {
+    console.error(e);
+    await sendMessage(chatId, "⚠️ Не получилось распознать фото — попробуйте переснять чуть чётче и прислать ещё раз, введите номер текстом, либо напишите «пропустить».");
+  }
+}
+ 
+async function handleInnText(chatId, session, text) {
+  const trimmed = (text || "").trim().toLowerCase();
+  if (trimmed === "пропустить" || trimmed === "нет" || trimmed === "-") {
+    session.awaitingInn = false;
+    session.awaitingSnils = true;
+    await sendGuideAnimation(chatId, STEP_ASSETS.snils, SNILS_PROMPT);
+    return;
+  }
+ 
+  const { inn } = parseSnilsInnText(text);
+  if (!inn) {
+    await sendMessage(
+      chatId,
+      "⚠️ Не получилось распознать номер. Пришлите ИНН текстом (например: 500100200300), фото документа, либо напишите «пропустить»."
+    );
+    return;
+  }
+ 
+  session.buyer.inn = inn;
+  session.awaitingInn = false;
+  session.awaitingSnils = true;
+  await sendGuideAnimation(chatId, STEP_ASSETS.snils, `✅ Принято.\n\n${SNILS_PROMPT}`);
+}
+ 
+// ---- Шаг СНИЛС ----
+ 
+async function handleSnilsPhoto(chatId, session, photoArray) {
+  await sendMessage(chatId, "🔍 Распознаю фото, минутку...");
+  try {
+    const { base64, mimeType } = await downloadLargestPhoto(photoArray);
+    const fields = await extractFields("snils", base64, mimeType);
+    const snilsDigits = (fields.snils || "").replace(/\D/g, "");
+ 
+    if (snilsDigits.length !== 11) {
+      await sendMessage(
+        chatId,
+        "⚠️ Не получилось разобрать СНИЛС на этом фото. Попробуйте переснять чётче, введите номер текстом, либо напишите «пропустить»."
+      );
+      return;
+    }
+ 
+    session.buyer.snils = formatSnils(snilsDigits);
+    session.awaitingSnils = false;
     await finalizeGibddForm(chatId, session);
   } catch (e) {
     console.error(e);
-    await sendMessage(chatId, "⚠️ Не получилось распознать фото — попробуйте переснять чуть чётче и прислать ещё раз, введите номера текстом, либо напишите «пропустить».");
+    await sendMessage(chatId, "⚠️ Не получилось распознать фото — попробуйте переснять чуть чётче и прислать ещё раз, введите номер текстом, либо напишите «пропустить».");
   }
 }
-
+ 
+async function handleSnilsText(chatId, session, text) {
+  const trimmed = (text || "").trim().toLowerCase();
+  if (trimmed === "пропустить" || trimmed === "нет" || trimmed === "-") {
+    session.awaitingSnils = false;
+    await finalizeGibddForm(chatId, session);
+    return;
+  }
+ 
+  const { snils } = parseSnilsInnText(text);
+  if (!snils) {
+    await sendMessage(
+      chatId,
+      "⚠️ Не получилось распознать номер. Пришлите СНИЛС текстом (например: 123-456-789 00), фото документа, либо напишите «пропустить»."
+    );
+    return;
+  }
+ 
+  session.buyer.snils = snils;
+  session.awaitingSnils = false;
+  await finalizeGibddForm(chatId, session);
+}
+ 
 async function handleUpdate(body) {
   const msg = body?.message;
   if (!msg) return;
   const chatId = msg.chat.id;
   const text = msg.text?.trim();
-
+ 
   if (text === "/start" || text === "/new") {
     sessions.set(chatId, newSession());
     await sendStepGuide(chatId, STEPS[0], INTRO);
@@ -308,17 +363,21 @@ async function handleUpdate(body) {
     await sendMessage(chatId, "🔄 Сброшено. Напишите /new, чтобы начать заново.");
     return;
   }
-
+ 
   let session = sessions.get(chatId);
   if (!session) {
     await sendMessage(chatId, "Напишите /new, чтобы начать сбор документов для договора.");
     return;
   }
-
-  if (session.awaitingSnilsInn && msg.photo) {
-    await handleSnilsInnPhoto(chatId, session, msg.photo);
-  } else if (session.awaitingSnilsInn && text) {
-    await handleSnilsInnText(chatId, session, text);
+ 
+  if (session.awaitingInn && msg.photo) {
+    await handleInnPhoto(chatId, session, msg.photo);
+  } else if (session.awaitingInn && text) {
+    await handleInnText(chatId, session, text);
+  } else if (session.awaitingSnils && msg.photo) {
+    await handleSnilsPhoto(chatId, session, msg.photo);
+  } else if (session.awaitingSnils && text) {
+    await handleSnilsText(chatId, session, text);
   } else if (msg.photo) {
     await handlePhoto(chatId, session, msg.photo);
   } else if (session.awaitingSellerPhone && text) {
@@ -335,16 +394,16 @@ async function handleUpdate(body) {
     await sendMessage(chatId, "Пришлите, пожалуйста, фото документа (или ответ, если сейчас ожидается телефон/сумма/город/выбор по заявлению).");
   }
 }
-
+ 
 const PORT = process.env.PORT || 3000;
-
+ 
 const server = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/") {
     res.writeHead(200, { "content-type": "text/plain" });
     res.end("dkp-bot is running");
     return;
   }
-
+ 
   if (req.method === "POST" && req.url === "/webhook") {
     let chunks = [];
     req.on("data", (c) => chunks.push(c));
@@ -360,11 +419,11 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-
+ 
   res.writeHead(404);
   res.end();
 });
-
+ 
 server.listen(PORT, async () => {
   console.log(`Listening on ${PORT}`);
   const externalUrl = process.env.RENDER_EXTERNAL_URL;
@@ -375,3 +434,4 @@ server.listen(PORT, async () => {
     console.log("RENDER_EXTERNAL_URL не задан — вебхук не регистрирую автоматически.");
   }
 });
+ 

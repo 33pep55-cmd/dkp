@@ -4,7 +4,10 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { extractFields } = require("./lib/claude");
-const { sendMessage, sendDocument, sendAnimation, downloadLargestPhoto, setWebhook } = require("./lib/telegram");
+const {
+  sendMessage, sendDocument, sendAnimation, downloadLargestPhoto, setWebhook,
+  answerCallbackQuery, editMessageReplyMarkup,
+} = require("./lib/telegram");
 const { buildDkp } = require("./lib/dkpTemplate");
 const { buildGibddForm } = require("./lib/gibddTemplate");
 const { formatSnils, parseSnilsInnText } = require("./lib/snils");
@@ -47,12 +50,15 @@ const CITY_PROMPT = "🏙️ <b>Шаг 9 из 9</b>\nТеперь напишит
 const GIBDD_QUESTION =
   "🚦 Договор готов. Сразу сформировать ещё и <b>заявление в ГИБДД</b>?\n\n" +
   "Оно понадобится вместе с договором купли-продажи, чтобы поставить автомобиль на учёт — основные данные я впишу сам, останется дописать пару строк от руки прямо в отделении.";
-const GIBDD_KEYBOARD = {
-  keyboard: [[{ text: "✅ Да, сформировать" }, { text: "❌ Не нужно" }]],
-  resize_keyboard: true,
-  one_time_keyboard: true,
+// Inline-кнопки показываются сразу под сообщением, без необходимости
+// открывать отдельное меню — в отличие от обычной reply-клавиатуры,
+// которая на некоторых устройствах прячется за малозаметной кнопкой.
+const GIBDD_INLINE_KEYBOARD = {
+  inline_keyboard: [[
+    { text: "✅ Да, сформировать", callback_data: "gibdd_yes" },
+    { text: "❌ Не нужно", callback_data: "gibdd_no" },
+  ]],
 };
-const REMOVE_KEYBOARD = { remove_keyboard: true };
  
 const INN_PROMPT =
   "🪪 Пришлите фото документа с ИНН <b>покупателя</b> (свидетельство или справка ФНС) — либо просто напишите номер текстом.\n\n" +
@@ -202,7 +208,7 @@ async function handleCity(chatId, session, text) {
   }
  
   session.awaitingGibddChoice = true;
-  await sendMessage(chatId, GIBDD_QUESTION, GIBDD_KEYBOARD);
+  await sendMessage(chatId, GIBDD_QUESTION, GIBDD_INLINE_KEYBOARD);
 }
  
 async function handleGibddChoice(chatId, session, text) {
@@ -211,20 +217,44 @@ async function handleGibddChoice(chatId, session, text) {
   const isNo = answer.includes("нет") || answer.includes("не нужно");
  
   if (!isYes && !isNo) {
-    await sendMessage(chatId, "Не совсем понял ответ — выберите один из вариантов на клавиатуре: «Да, сформировать» или «Не нужно».", GIBDD_KEYBOARD);
+    await sendMessage(chatId, "Не совсем понял ответ — нажмите одну из кнопок под сообщением выше, либо напишите «да» или «нет».");
     return;
   }
  
   session.awaitingGibddChoice = false;
  
   if (isNo) {
-    await sendMessage(chatId, "Хорошо, не формирую. Если понадобится позже — просто напишите /new и повторите сбор документов.", REMOVE_KEYBOARD);
+    await sendMessage(chatId, "Хорошо, не формирую. Если понадобится позже — просто напишите /new и повторите сбор документов.");
     sessions.delete(chatId);
     return;
   }
  
   session.awaitingInn = true;
-  await sendGuideAnimation(chatId, STEP_ASSETS.inn, INN_PROMPT, REMOVE_KEYBOARD);
+  await sendGuideAnimation(chatId, STEP_ASSETS.inn, INN_PROMPT);
+}
+ 
+// Обрабатывает нажатие inline-кнопки "Да / Нет" под вопросом про ГИБДД.
+async function handleGibddCallback(callbackQuery) {
+  const chatId = callbackQuery.message.chat.id;
+  const messageId = callbackQuery.message.message_id;
+  const data = callbackQuery.data;
+ 
+  await answerCallbackQuery(callbackQuery.id); // убираем "часики" на кнопке
+  await editMessageReplyMarkup(chatId, messageId, { inline_keyboard: [] }); // прячем кнопки, чтобы не нажали повторно
+ 
+  const session = sessions.get(chatId);
+  if (!session || !session.awaitingGibddChoice) return; // устаревшее нажатие — сессия уже ушла дальше
+ 
+  session.awaitingGibddChoice = false;
+ 
+  if (data === "gibdd_no") {
+    await sendMessage(chatId, "Хорошо, не формирую. Если понадобится позже — просто напишите /new и повторите сбор документов.");
+    sessions.delete(chatId);
+    return;
+  }
+ 
+  session.awaitingInn = true;
+  await sendGuideAnimation(chatId, STEP_ASSETS.inn, INN_PROMPT);
 }
  
 async function finalizeGibddForm(chatId, session) {
@@ -348,6 +378,11 @@ async function handleSnilsText(chatId, session, text) {
 }
  
 async function handleUpdate(body) {
+  if (body?.callback_query) {
+    await handleGibddCallback(body.callback_query);
+    return;
+  }
+ 
   const msg = body?.message;
   if (!msg) return;
   const chatId = msg.chat.id;

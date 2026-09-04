@@ -143,12 +143,6 @@ const CATEGORY_KEYBOARD = {
 // Сохраняем прежнее имя для мест, где раньше показывался единый список —
 // теперь это просто самый первый (категорийный) уровень меню.
 const START_KEYBOARD = CATEGORY_KEYBOARD;
-// Экран приветствия — показывается один раз, до самого списка документов,
-// чтобы у бота был понятный "вход", а не сразу шквал вариантов.
-const WELCOME_KEYBOARD = {
-  inline_keyboard: [[{ text: "▶️ Старт", callback_data: "menu_categories" }]],
-};
-const WELCOME_TEXT = "👋 Привет! Я помогу подготовить документы автоматически — по фото ваших бумаг.";
 // Кнопка "Начать сначала" — прикрепляется к шагам сбора документов,
 // чтобы можно было сбросить сделку и начать заново в любой момент,
 // опять же без похода в меню команд.
@@ -574,7 +568,7 @@ async function handleUpdate(body) {
   if (text === "/start") {
     sessions.delete(chatId);
     bankruptcySessions.delete(chatId);
-    await sendMessage(chatId, WELCOME_TEXT, WELCOME_KEYBOARD);
+    await sendMessage(chatId, "👋 Какой документ хотите сформировать?", CATEGORY_KEYBOARD);
     return;
   }
   if (text === "/new") {

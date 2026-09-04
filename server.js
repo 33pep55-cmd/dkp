@@ -545,26 +545,10 @@ async function handleUpdate(body) {
   const chatId = msg.chat.id;
   const text = msg.text?.trim();
 
-  // Сценарий банкротства — фото и текст, пока сессия активна
-  if (bankruptcySessions.has(chatId)) {
-    const engine = bankruptcySessions.get(chatId);
-    const node = engine.currentNode();
-
-    if (msg.photo) {
-      await handleBankruptcyAction(chatId, engine, { type: "photo", payload: msg.photo }, bankruptcyDeps);
-    } else if (text && node.type === "collection" && engine.collectionAwaiting() === "item") {
-      await handleBankruptcyAction(chatId, engine, { type: "text", payload: text }, bankruptcyDeps);
-    } else if (text) {
-      // Ручной ввод нескольких полей (например, данные СРО) — пока
-      // не разобран по отдельным полям, это ближайшее, что предстоит
-      // доточить на практике.
-      await sendMessage(chatId, "⚠️ Ручной ввод нескольких полей ещё дорабатывается — пока, пожалуйста, используйте кнопки или загрузите фото документа.");
-    }
-
-    if (engine.isFinished()) bankruptcySessions.delete(chatId);
-    return;
-  }
-
+  // Команды — всегда в приоритете, даже если у чата "застряла" активная
+  // сессия (ДКП или банкротство) на каком-то шаге. Иначе, если человек
+  // растерялся посреди сценария, /start не сработает — текст просто
+  // уйдёт в обработчик текущего шага вместо сброса.
   if (text === "/start") {
     sessions.delete(chatId);
     bankruptcySessions.delete(chatId);
@@ -586,6 +570,26 @@ async function handleUpdate(body) {
     sessions.delete(chatId);
     bankruptcySessions.delete(chatId);
     await sendMessage(chatId, "🔄 Сброшено. Напишите /new, чтобы начать заново.");
+    return;
+  }
+
+  // Сценарий банкротства — фото и текст, пока сессия активна
+  if (bankruptcySessions.has(chatId)) {
+    const engine = bankruptcySessions.get(chatId);
+    const node = engine.currentNode();
+
+    if (msg.photo) {
+      await handleBankruptcyAction(chatId, engine, { type: "photo", payload: msg.photo }, bankruptcyDeps);
+    } else if (text && node.type === "collection" && engine.collectionAwaiting() === "item") {
+      await handleBankruptcyAction(chatId, engine, { type: "text", payload: text }, bankruptcyDeps);
+    } else if (text) {
+      // Ручной ввод нескольких полей (например, данные СРО) — пока
+      // не разобран по отдельным полям, это ближайшее, что предстоит
+      // доточить на практике.
+      await sendMessage(chatId, "⚠️ Ручной ввод нескольких полей ещё дорабатывается — пока, пожалуйста, используйте кнопки или загрузите фото документа.");
+    }
+
+    if (engine.isFinished()) bankruptcySessions.delete(chatId);
     return;
   }
 

@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const { extractFields } = require("./lib/claude");
 const {
-  sendMessage, sendDocument, sendAnimation, downloadLargestPhoto, setWebhook,
+  sendMessage, sendDocument, sendAnimation, downloadLargestPhoto, downloadDocument, setWebhook,
   answerCallbackQuery, editMessageReplyMarkup, setMyCommands, setChatMenuButton,
 } = require("./lib/telegram");
 const { buildDkp } = require("./lib/dkpTemplate");
@@ -19,7 +19,7 @@ const {
 // с сессиями ДКП выше, у каждого чата может быть активна только
 // одна из двух (или ни одной).
 const bankruptcySessions = new Map();
-const bankruptcyDeps = { sendMessage, sendDocument, downloadLargestPhoto, sendGuideAnimation };
+const bankruptcyDeps = { sendMessage, sendDocument, downloadLargestPhoto, downloadDocument, sendGuideAnimation };
 
 // ---- простая машина состояний, по одной сессии на чат ----
 // (хранится в памяти процесса — при перезапуске сервера сбрасывается,
@@ -580,6 +580,8 @@ async function handleUpdate(body) {
 
     if (msg.photo) {
       await handleBankruptcyAction(chatId, engine, { type: "photo", payload: msg.photo }, bankruptcyDeps);
+    } else if (msg.document) {
+      await handleBankruptcyAction(chatId, engine, { type: "document", payload: msg.document }, bankruptcyDeps);
     } else if (text && node.type === "collection" && engine.collectionAwaiting() === "item") {
       await handleBankruptcyAction(chatId, engine, { type: "text", payload: text }, bankruptcyDeps);
     } else if (text) {

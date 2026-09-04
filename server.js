@@ -19,7 +19,7 @@ const {
 // с сессиями ДКП выше, у каждого чата может быть активна только
 // одна из двух (или ни одной).
 const bankruptcySessions = new Map();
-const bankruptcyDeps = { sendMessage, sendDocument, downloadLargestPhoto };
+const bankruptcyDeps = { sendMessage, sendDocument, downloadLargestPhoto, sendGuideAnimation };
 
 // ---- простая машина состояний, по одной сессии на чат ----
 // (хранится в памяти процесса — при перезапуске сервера сбрасывается,

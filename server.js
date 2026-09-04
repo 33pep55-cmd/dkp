@@ -672,8 +672,6 @@ server.listen(PORT, async () => {
   try {
     const cmdResult = await setMyCommands([
       { command: "start", description: "👋 Выбрать документ" },
-      { command: "new", description: "📄 Заполнить договор" },
-      { command: "bankrot", description: "📋 Заявление на банкротство" },
     ]);
     console.log("setMyCommands result:", cmdResult);
     const menuResult = await setChatMenuButton({ type: "commands" });

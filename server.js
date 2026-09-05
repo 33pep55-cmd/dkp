@@ -502,8 +502,11 @@ async function handleUpdate(body) {
     if (cq.data === "menu_bankruptcy") {
       await answerCallbackQuery(cq.id);
       await editMessageReplyMarkup(chatId, cq.message.message_id, { inline_keyboard: [] });
-      const engine = newBankruptcyEngine();
-      bankruptcySessions.set(chatId, engine);
+      let engine = bankruptcySessions.get(chatId);
+      if (!engine) {
+        engine = newBankruptcyEngine();
+        bankruptcySessions.set(chatId, engine);
+      }
       await renderBankruptcyStep(chatId, engine, bankruptcyDeps);
       return;
     }
@@ -561,8 +564,11 @@ async function handleUpdate(body) {
     return;
   }
   if (text === "/bankrot") {
-    const engine = newBankruptcyEngine();
-    bankruptcySessions.set(chatId, engine);
+    let engine = bankruptcySessions.get(chatId);
+    if (!engine) {
+      engine = newBankruptcyEngine();
+      bankruptcySessions.set(chatId, engine);
+    }
     await renderBankruptcyStep(chatId, engine, bankruptcyDeps);
     return;
   }

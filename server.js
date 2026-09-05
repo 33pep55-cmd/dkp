@@ -533,6 +533,10 @@ async function handleUpdate(body) {
         // Выбор одного из готовых вариантов (например, финансового
         // управляющего) на шагах с presetSource — см. bankruptcy-bot-handler.js.
         await handleBankruptcyAction(chatId, engine, { type: "preset", payload: data.slice(7) }, bankruptcyDeps);
+      } else if (data.startsWith("dealtype:")) {
+        // Выбор типа сделки за 3 года (недвижимость/авто/доли/иное) —
+        // от этого зависит, каким способом распознавать сам документ.
+        await handleBankruptcyAction(chatId, engine, { type: "dealtype", payload: data.slice(9) }, bankruptcyDeps);
       }
 
       if (engine.isFinished()) bankruptcySessions.delete(chatId);

@@ -28,6 +28,18 @@ const STUB_TEMPLATES = new Set(["ip_closure_p26001", "mortgage_settlement_petiti
 // не через Claude Vision, а обычным чтением текста (см. credit-report-parser.mjs
 // и cbr-bank-lookup.mjs — оба написаны как ES-модули, поэтому подключаем
 // их динамическим import() из обычного CommonJS-файла).
+
+// Сделки за 3 года бывают разных типов, и у каждого свой способ
+// распознавания (или его отсутствие). Раньше выбор типа сделки был
+// только "для галочки" в схеме — сам код его никогда не спрашивал,
+// из-за чего загрузка фото гарантированно падала с "неизвестный тип
+// документа". Теперь тип реально спрашивается перед загрузкой.
+const DEAL_TYPE_TO_DOCTYPE = {
+  "недвижимость": "property_deal",
+  "автомобиль": "vehicle_deal",
+  // "доли и ценные бумаги" и "иное" — распознавания по фото нет,
+  // для них принимаем только текстовое описание.
+};
 async function parseCreditReportDocument(buffer, fileName) {
   const tmpPath = path.join(os.tmpdir(), `report-${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`);
   fs.writeFileSync(tmpPath, buffer);
@@ -120,8 +132,19 @@ async function renderCurrentStep(chatId, engine, deps) {
     if (node.type === "collection") {
       const awaiting = engine.collectionAwaiting();
       if (awaiting === "item") {
-        const caption = `📎 ${node.itemPrompt}${ATTACH_HINT_COLLECTION}`;
-        const asset = GUIDE_ASSETS[node.itemDocType];
+        // Если у коллекции есть варианты типа пункта (сейчас — только
+        // сделки за 3 года) и тип для текущего пункта ещё не выбран —
+        // сначала спрашиваем именно это, до всякой загрузки.
+        if (node.itemTypeOptions && !engine.collectionState?.dealType) {
+          await deps.sendMessage(chatId, `❓ ${node.itemPrompt}`, dealTypeKeyboard(node.itemTypeOptions));
+          return;
+        }
+
+        const itemDocType = node.itemDocType || DEAL_TYPE_TO_DOCTYPE[engine.collectionState?.dealType];
+        const caption = itemDocType
+          ? `📎 Загрузите документ по сделке${ATTACH_HINT_COLLECTION}`
+          : `✍️ Опишите сделку своими словами одним сообщением — этот тип не распознаётся по фото.\n\nЕсли добавлять больше нечего — нажмите «Готово» ниже.`;
+        const asset = GUIDE_ASSETS[itemDocType];
         if (asset && deps.sendGuideAnimation) {
           await deps.sendGuideAnimation(chatId, asset, caption, collectionItemKeyboard());
         } else {
@@ -193,13 +216,24 @@ async function handleAction(chatId, engine, action, deps) {
       engine.submitAnswer(action.payload);
     } else if (node.type === "collection") {
       const awaiting = engine.collectionAwaiting();
-      if (awaiting === "item") {
+      if (node.itemTypeOptions && awaiting === "item" && !engine.collectionState?.dealType && action.type === "dealtype") {
+        // Просто запоминаем выбранный тип и перерисовываем шаг заново —
+        // саму коллекцию это никак не продвигает.
+        engine.collectionState.dealType = action.payload;
+      } else if (awaiting === "item") {
+        const itemDocType = node.itemDocType || DEAL_TYPE_TO_DOCTYPE[engine.collectionState?.dealType];
         if (action.type === "photo") {
+          if (!itemDocType) {
+            await deps.sendMessage(chatId, "✍️ Для этого типа сделки нужно текстовое описание, а не фото — опишите её одним сообщением.");
+            return;
+          }
           const { base64, mimeType } = await deps.downloadLargestPhoto(action.payload);
-          const fields = await (deps.extractFields || realExtractFields)(node.itemDocType, base64, mimeType);
-          engine.submitCollectionItem(fields);
+          const fields = await (deps.extractFields || realExtractFields)(itemDocType, base64, mimeType);
+          const dealType = engine.collectionState?.dealType;
+          engine.submitCollectionItem(dealType ? { ...fields, propertyType: dealType } : fields);
         } else if (action.type === "text") {
-          engine.submitCollectionItem({ raw: action.payload, enteredManually: true });
+          const dealType = engine.collectionState?.dealType;
+          engine.submitCollectionItem({ raw: action.payload, enteredManually: true, ...(dealType ? { propertyType: dealType } : {}) });
         } else if (action.type === "skip") {
           engine.submitCollectionContinue(false);
         }
@@ -246,6 +280,9 @@ function optionsKeyboard(options) {
 }
 function skipKeyboard() {
   return { inline_keyboard: [[{ text: "⏭ Пропустить (нет документа)", callback_data: "skip" }]] };
+}
+function dealTypeKeyboard(options) {
+  return { inline_keyboard: options.map(o => [{ text: o, callback_data: `dealtype:${o}` }]) };
 }
 function collectionItemKeyboard() {
   // Раньше здесь была ещё кнопка "Ввести вручную", но она вела в

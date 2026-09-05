@@ -72,6 +72,13 @@ class WizardEngine {
     if (node.type !== "question") {
       throw new Error(`Шаг ${this.currentNodeId} не является вопросом`);
     }
+    // Некоторые вопросы определяют не только ветку сценария, но и сам
+    // факт, который должен попасть в документ (например, семейное
+    // положение) — раньше это никак не сохранялось, только влияло на
+    // то, какие документы запрашивать дальше.
+    if (node.storeAs) {
+      this.collectedData[node.storeAs] = node.storeMap ? node.storeMap[answer] : answer;
+    }
     this.history.push({ step: this.currentNodeId, type: "question", answer });
     this.advance(node.next[answer]);
   }

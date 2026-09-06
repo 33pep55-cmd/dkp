@@ -1,0 +1,110 @@
+{
+  "flowId": "rental-agreement",
+  "title": "Договор аренды квартиры",
+  "start": "landlord_passport",
+  "nodes": {
+
+    "landlord_passport": {
+      "type": "upload",
+      "title": "Загрузите паспорт (разворот с фото) АРЕНДОДАТЕЛЯ (собственника)",
+      "docType": "passport_main",
+      "role": "landlord",
+      "next": "landlord_registration"
+    },
+    "landlord_registration": {
+      "type": "upload",
+      "title": "Теперь разворот паспорта АРЕНДОДАТЕЛЯ со штампом регистрации",
+      "docType": "passport_registration",
+      "role": "landlord",
+      "next": "tenant_passport"
+    },
+
+    "tenant_passport": {
+      "type": "upload",
+      "title": "Загрузите паспорт (разворот с фото) АРЕНДАТОРА",
+      "docType": "passport_main",
+      "role": "tenant",
+      "next": "tenant_registration"
+    },
+    "tenant_registration": {
+      "type": "upload",
+      "title": "Теперь разворот паспорта АРЕНДАТОРА со штампом регистрации",
+      "docType": "passport_registration",
+      "role": "tenant",
+      "next": "apartment_address"
+    },
+
+    "apartment_address": {
+      "type": "text_input",
+      "title": "Напишите адрес сдаваемой квартиры",
+      "storeAs": "apartmentAddress",
+      "next": "apartment_details"
+    },
+    "apartment_details": {
+      "type": "text_input",
+      "title": "Напишите площадь и этаж квартиры (например: 45 кв.м, 3 этаж)",
+      "storeAs": "apartmentDetails",
+      "next": "apartment_cadastral"
+    },
+    "apartment_cadastral": {
+      "type": "text_input",
+      "title": "Напишите кадастровый номер квартиры (если не знаете — напишите «нет»)",
+      "storeAs": "cadastralNumber",
+      "next": "lease_term"
+    },
+
+    "lease_term": {
+      "type": "text_input",
+      "title": "На какой срок заключается договор? (например: с 01.03.2026 по 01.03.2027)",
+      "storeAs": "leaseTerm",
+      "next": "renewal_terms"
+    },
+    "renewal_terms": {
+      "type": "text_input",
+      "title": "Условия продления — договор продлевается автоматически, если ни одна из сторон не заявит об отказе за сколько дней? (например: за 30 дней; или напишите «без автопродления»)",
+      "storeAs": "renewalTerms",
+      "next": "rent_amount"
+    },
+
+    "rent_amount": {
+      "type": "text_input",
+      "title": "Размер арендной платы в месяц (только цифры, в рублях)",
+      "storeAs": "rentAmount",
+      "next": "payment_terms"
+    },
+    "payment_terms": {
+      "type": "text_input",
+      "title": "Порядок и сроки внесения оплаты (например: до 5 числа каждого месяца, наличными/переводом на карту)",
+      "storeAs": "paymentTerms",
+      "next": "deposit_amount"
+    },
+
+    "deposit_amount": {
+      "type": "text_input",
+      "title": "Сумма залога (депозита), только цифры в рублях (если залога нет — напишите 0)",
+      "storeAs": "depositAmount",
+      "next": "deposit_return_terms"
+    },
+    "deposit_return_terms": {
+      "type": "text_input",
+      "title": "Правила возврата залога (например: возвращается в течение 5 дней после выезда, если имущество и счётчики в порядке)",
+      "storeAs": "depositReturnTerms",
+      "next": "inventory"
+    },
+
+    "inventory": {
+      "type": "text_input",
+      "title": "Опись имущества (мебель, техника) и текущие показания счётчиков — опишите одним сообщением",
+      "storeAs": "inventoryDescription",
+      "next": "final_generate"
+    },
+
+    "final_generate": {
+      "type": "generate",
+      "title": "Договор аренды квартиры",
+      "template": "rental_agreement",
+      "sourceFields": "*",
+      "next": null
+    }
+  }
+}

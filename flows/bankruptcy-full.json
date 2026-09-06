@@ -227,7 +227,7 @@
       "type": "question",
       "title": "Были ли у вас за последние 3 года сделки с имуществом (недвижимость, автомобиль, доли, ценные бумаги) на сумму свыше 300 000 ₽?",
       "options": ["да", "нет"],
-      "next": { "да": "deals_collection", "нет": "credit_reports_intro" }
+      "next": { "да": "deals_collection", "нет": "credit_reports_choice" }
     },
     "deals_collection": {
       "type": "collection",
@@ -236,9 +236,15 @@
       "itemPrompt": "Выберите тип сделки, затем загрузите договор — либо введите данные вручную.",
       "itemTypeOptions": ["недвижимость", "автомобиль", "доли и ценные бумаги", "иное"],
       "addMorePrompt": "Была ещё одна сделка?",
-      "next": "credit_reports_intro"
+      "next": "credit_reports_choice"
     },
 
+    "credit_reports_choice": {
+      "type": "question",
+      "title": "Как будем собирать сведения о кредиторах — загрузите готовые отчёты, или впишете кредиторов сами (если уже знаете список)?",
+      "options": ["Загружу отчёты", "Введу сам"],
+      "next": { "Загружу отчёты": "credit_reports_intro", "Введу сам": "creditors_extra_collection" }
+    },
     "credit_reports_intro": {
       "type": "message",
       "title": "Кредитные отчёты",
@@ -262,9 +268,9 @@
     },
     "creditors_extra_collection": {
       "type": "collection",
-      "title": "Остальные кредиторы",
+      "title": "Кредиторы",
       "collectionKey": "creditors",
-      "itemPrompt": "Есть кредиторы, которых не было ни в одном отчёте (расписки, ЖКХ)? Добавьте, либо нажмите «Готово».",
+      "itemPrompt": "Впишите кредитора одним сообщением — название и сумма долга (например: Тинькофф Банк, 50000). Когда всё внесли — нажмите «Готово».",
       "addMorePrompt": "Добавить ещё одного кредитора вручную?",
       "next": "sro_select"
     },

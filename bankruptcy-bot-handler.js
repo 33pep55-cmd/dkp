@@ -67,6 +67,13 @@ const GUIDE_ASSETS = {
   snils: "guide_snils.gif",
   vehicle_doc: "guide_vehicle_doc.gif",
   birth_certificate: "guide_birth_cert.gif",
+  death_certificate: "guide_death_cert.gif",
+  divorce_certificate: "guide_divorce_cert.gif",
+  marriage_certificate: "guide_marriage_cert.gif",
+  egrn_extract: "guide_egrn_extract.gif",
+  egrn_negative: "guide_egrn_negative.gif",
+  marriage_contract: "guide_marriage_contract.gif",
+  ip_status_certificate: "guide_ip_status_certificate.gif",
 };
 
 // Явная подсказка про скрепку — иначе взгляд тянется только к видимой
@@ -177,6 +184,12 @@ async function finalize(chatId, engine, deps) {
   const buffer = await generateBankruptcyApplication(engine.collectedData);
   await deps.sendDocument(chatId, buffer, "zayavlenie_bankrotstvo.docx",
     "📄 Черновик заявления о банкротстве готов. Обязательно проверьте все данные перед подачей в суд.");
+
+  // Отдельное предложение — специально после основного документа, а не
+  // посреди сценария, чтобы не отвлекать от главной задачи.
+  if (deps.offerRentalAgreement) {
+    await deps.offerRentalAgreement(chatId);
+  }
 }
 
 // ---- Обработка входящих действий пользователя ----

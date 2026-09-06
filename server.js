@@ -14,12 +14,30 @@ const {
   renderCurrentStep: renderBankruptcyStep,
   handleAction: handleBankruptcyAction,
 } = require("./lib/bankruptcy-bot-handler");
+const {
+  newEngine: newRentalEngine,
+  renderCurrentStep: renderRentalStep,
+  handleAction: handleRentalAction,
+} = require("./lib/rental-bot-handler");
 
 // Отдельная карта сессий для сценария банкротства — не пересекается
 // с сессиями ДКП выше, у каждого чата может быть активна только
 // одна из двух (или ни одной).
 const bankruptcySessions = new Map();
-const bankruptcyDeps = { sendMessage, sendDocument, downloadLargestPhoto, downloadDocument, sendGuideAnimation };
+const rentalSessions = new Map();
+
+const RENT_OFFER_KEYBOARD = {
+  inline_keyboard: [[
+    { text: "📄 Да, сформировать договор аренды", callback_data: "menu_rent" },
+    { text: "Не сейчас", callback_data: "rent_no" },
+  ]],
+};
+async function offerRentalAgreement(chatId) {
+  await sendMessage(chatId, "🏠 Кстати — раз уж вы разбираетесь с документами, хотите заодно сформировать договор аренды квартиры? Тоже по фото + пара вопросов.", RENT_OFFER_KEYBOARD);
+}
+
+const bankruptcyDeps = { sendMessage, sendDocument, downloadLargestPhoto, downloadDocument, sendGuideAnimation, offerRentalAgreement };
+const rentalDeps = { sendMessage, sendDocument, downloadLargestPhoto, sendGuideAnimation };
 
 // ---- простая машина состояний, по одной сессии на чат ----
 // (хранится в памяти процесса — при перезапуске сервера сбрасывается,
@@ -511,6 +529,25 @@ async function handleUpdate(body) {
       return;
     }
 
+    // Запуск (или отказ от) договора аренды — предлагается отдельной
+    // кнопкой в конце сценария банкротства, либо командой /rent напрямую.
+    if (cq.data === "menu_rent") {
+      await answerCallbackQuery(cq.id);
+      await editMessageReplyMarkup(chatId, cq.message.message_id, { inline_keyboard: [] });
+      let engine = rentalSessions.get(chatId);
+      if (!engine) {
+        engine = newRentalEngine();
+        rentalSessions.set(chatId, engine);
+      }
+      await renderRentalStep(chatId, engine, rentalDeps);
+      return;
+    }
+    if (cq.data === "rent_no") {
+      await answerCallbackQuery(cq.id);
+      await editMessageReplyMarkup(chatId, cq.message.message_id, { inline_keyboard: [] });
+      return;
+    }
+
     // Если у чата уже идёт сценарий банкротства — все остальные нажатия
     // (варианты ответа, "пропустить", "ввести вручную", "готово",
     // выбор управляющего из готового списка и т.п.) разбираем здесь же,
@@ -537,6 +574,16 @@ async function handleUpdate(body) {
         // Выбор типа сделки за 3 года (недвижимость/авто/доли/иное) —
         // от этого зависит, каким способом распознавать сам документ.
         await handleBankruptcyAction(chatId, engine, { type: "dealtype", payload: data.slice(9) }, bankruptcyDeps);
+      } else if (data === "back_bankrot") {
+        // Кнопка "Назад" — присутствует на каждом шаге, откатывает
+        // сценарий на один реальный шаг назад (пропуская служебные
+        // записи истории) и показывает его заново для исправления.
+        const went = engine.goBack();
+        if (went) {
+          await renderBankruptcyStep(chatId, engine, bankruptcyDeps);
+        } else {
+          await sendMessage(chatId, "Это самый первый шаг — дальше назад некуда.");
+        }
       }
 
       if (engine.isFinished()) bankruptcySessions.delete(chatId);
@@ -559,6 +606,7 @@ async function handleUpdate(body) {
   if (text === "/start") {
     sessions.delete(chatId);
     bankruptcySessions.delete(chatId);
+    rentalSessions.delete(chatId);
     await sendMessage(chatId, "👋 Какой документ хотите сформировать?", CATEGORY_KEYBOARD);
     return;
   }
@@ -576,9 +624,19 @@ async function handleUpdate(body) {
     await renderBankruptcyStep(chatId, engine, bankruptcyDeps);
     return;
   }
+  if (text === "/rent") {
+    let engine = rentalSessions.get(chatId);
+    if (!engine) {
+      engine = newRentalEngine();
+      rentalSessions.set(chatId, engine);
+    }
+    await renderRentalStep(chatId, engine, rentalDeps);
+    return;
+  }
   if (text === "/reset") {
     sessions.delete(chatId);
     bankruptcySessions.delete(chatId);
+    rentalSessions.delete(chatId);
     await sendMessage(chatId, "🔄 Сброшено. Напишите /new, чтобы начать заново.");
     return;
   }
@@ -602,6 +660,17 @@ async function handleUpdate(body) {
     }
 
     if (engine.isFinished()) bankruptcySessions.delete(chatId);
+    return;
+  }
+
+  if (rentalSessions.has(chatId)) {
+    const engine = rentalSessions.get(chatId);
+    if (msg.photo) {
+      await handleRentalAction(chatId, engine, { type: "photo", payload: msg.photo }, rentalDeps);
+    } else if (text) {
+      await handleRentalAction(chatId, engine, { type: "text", payload: text }, rentalDeps);
+    }
+    if (engine.isFinished()) rentalSessions.delete(chatId);
     return;
   }
 

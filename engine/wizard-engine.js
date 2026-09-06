@@ -39,6 +39,43 @@ class WizardEngine {
     return this.revisiting;
   }
 
+  // Возврат ровно на один шаг назад — на тот, где человек реально
+  // что-то вводил (пропускаем служебные записи истории вроде
+  // автоматических условий или generate, к ним возвращаться незачем).
+  // Возвращает true, если получилось откатиться, false — если позади
+  // уже ничего нет (самое начало сценария).
+  goBack() {
+    const SKIP_TYPES = new Set(["condition", "generate", "revisit_return"]);
+    while (this.history.length > 0 && SKIP_TYPES.has(this.history[this.history.length - 1].type)) {
+      this.history.pop();
+    }
+    if (this.history.length === 0) return false;
+
+    const last = this.history.pop();
+    this.currentNodeId = last.step;
+
+    if (last.type === "collection_item") {
+      // Один пункт коллекции — убираем именно его, чтобы повторный ввод
+      // не добавился вторым пунктом поверх старого.
+      const node = this.flow.nodes[last.step];
+      const arr = this.collectedData[node.collectionKey];
+      if (Array.isArray(arr) && arr.length > 0) arr.pop();
+      this.collectionState = { awaiting: "item" };
+    } else if (last.type === "collection_continue") {
+      this.collectionState = { awaiting: "continue" };
+    } else if (last.type === "upload_collection") {
+      // Загрузка отчёта разом добавила несколько кредиторов — убираем
+      // ровно столько, сколько добавил именно этот шаг.
+      const node = this.flow.nodes[last.step];
+      const arr = this.collectedData[node.collectionKey];
+      if (Array.isArray(arr) && last.count) arr.splice(arr.length - last.count, last.count);
+    }
+    // upload / question / manual_input / text_input / message_ack —
+    // отдельно откатывать нечего: новый ответ на том же шаге просто
+    // перезапишет старое значение.
+    return true;
+  }
+
   submitUpload(extractedFields) {
     const node = this.currentNode();
     if (node.type !== "upload") {
@@ -90,6 +127,20 @@ class WizardEngine {
     }
     Object.assign(this.collectedData, fields);
     this.history.push({ step: this.currentNodeId, type: "manual_input", data: fields });
+    this.advance(node.next);
+  }
+
+  // Простой шаг "один вопрос — один текстовый ответ" (сумма аренды,
+  // срок действия и т.п.) — в отличие от manual_input, здесь всегда
+  // ровно одно поле, поэтому ничего не нужно доделывать для
+  // многополевого ввода, который пока не готов.
+  submitTextInput(text) {
+    const node = this.currentNode();
+    if (node.type !== "text_input") {
+      throw new Error(`Шаг ${this.currentNodeId} не является текстовым вопросом`);
+    }
+    this.collectedData[node.storeAs] = text;
+    this.history.push({ step: this.currentNodeId, type: "text_input", value: text });
     this.advance(node.next);
   }
 

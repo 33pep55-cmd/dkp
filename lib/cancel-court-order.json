@@ -1,0 +1,53 @@
+{
+  "flowId": "cancel-court-order",
+  "title": "Заявление об отмене судебного приказа",
+  "start": "co_passport",
+  "nodes": {
+
+    "co_passport": {
+      "type": "upload",
+      "title": "Загрузите паспорт (разворот с фото)",
+      "docType": "passport_main",
+      "next": "co_registration"
+    },
+    "co_registration": {
+      "type": "upload",
+      "title": "Теперь разворот паспорта со штампом регистрации",
+      "docType": "passport_registration",
+      "next": "co_court_name"
+    },
+
+    "co_court_name": {
+      "type": "text_input",
+      "title": "Название и номер судебного участка мирового судьи, который вынес приказ (например: судебный участок №5 Тверского района г. Москвы — указан в самом приказе)",
+      "storeAs": "courtName",
+      "next": "co_order_number"
+    },
+    "co_order_number": {
+      "type": "text_input",
+      "title": "Номер и дата судебного приказа (например: № 2-123/2026 от 10.01.2026 — указаны в самом приказе)",
+      "storeAs": "orderNumber",
+      "next": "co_creditor_name"
+    },
+    "co_creditor_name": {
+      "type": "text_input",
+      "title": "ФИО или название взыскателя — кто подавал на судебный приказ",
+      "storeAs": "creditorName",
+      "next": "co_received_date"
+    },
+    "co_received_date": {
+      "type": "text_input",
+      "title": "Дата, когда вы получили копию приказа (это важно — на возражение даётся 10 дней с этой даты по ст. 128 ГПК РФ)",
+      "storeAs": "receivedDate",
+      "next": "co_generate"
+    },
+
+    "co_generate": {
+      "type": "generate",
+      "title": "Возражения относительно исполнения судебного приказа",
+      "template": "cancel_court_order",
+      "sourceFields": "*",
+      "next": null
+    }
+  }
+}

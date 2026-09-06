@@ -19,12 +19,24 @@ const {
   renderCurrentStep: renderRentalStep,
   handleAction: handleRentalAction,
 } = require("./lib/rental-bot-handler");
+const {
+  newEngine: newPristavEngine,
+  renderCurrentStep: renderPristavStep,
+  handleAction: handlePristavAction,
+} = require("./lib/pristav-minimum-bot-handler");
+const {
+  newEngine: newCancelOrderEngine,
+  renderCurrentStep: renderCancelOrderStep,
+  handleAction: handleCancelOrderAction,
+} = require("./lib/cancel-court-order-bot-handler");
 
 // Отдельная карта сессий для сценария банкротства — не пересекается
 // с сессиями ДКП выше, у каждого чата может быть активна только
 // одна из двух (или ни одной).
 const bankruptcySessions = new Map();
 const rentalSessions = new Map();
+const pristavSessions = new Map();
+const cancelOrderSessions = new Map();
 
 const RENT_OFFER_KEYBOARD = {
   inline_keyboard: [[
@@ -38,6 +50,8 @@ async function offerRentalAgreement(chatId) {
 
 const bankruptcyDeps = { sendMessage, sendDocument, downloadLargestPhoto, downloadDocument, sendGuideAnimation, offerRentalAgreement };
 const rentalDeps = { sendMessage, sendDocument, downloadLargestPhoto, sendGuideAnimation };
+const pristavDeps = { sendMessage, sendDocument, downloadLargestPhoto, sendGuideAnimation };
+const cancelOrderDeps = { sendMessage, sendDocument, downloadLargestPhoto, sendGuideAnimation };
 
 // ---- простая машина состояний, по одной сессии на чат ----
 // (хранится в памяти процесса — при перезапуске сервера сбрасывается,
@@ -156,6 +170,8 @@ const CATEGORY_KEYBOARD = {
     [{ text: "🚗 Договор купли-продажи авто", callback_data: "menu_new" }],
     [{ text: "🚦 Заявление на постановку на учёт в ГИБДД ТС", callback_data: "menu_gibdd_only" }],
     [{ text: "📋 Заявление на банкротство физ. лиц", callback_data: "menu_bankruptcy" }],
+    [{ text: "🛡 Заявление приставам о сохранении прожиточного минимума", callback_data: "menu_minimum" }],
+    [{ text: "⚖️ Заявление об отмене судебного приказа", callback_data: "menu_cancelorder" }],
   ],
 };
 // Сохраняем прежнее имя для мест, где раньше показывался единый список —
@@ -286,7 +302,7 @@ async function handleCity(chatId, session, text) {
       buyer: session.buyer,
       vehicle: session.vehicle,
     });
-    await sendDocument(chatId, buffer, "dkp.docx", "📄 <b>Черновик договора готов</b>\nПроверьте все поля перед подписанием.");
+    await sendDocument(chatId, buffer, "Договор купли-продажи автомобиля.docx", "📄 <b>Черновик договора готов</b>\nПроверьте все поля перед подписанием.");
   } catch (e) {
     console.error(e);
     await sendMessage(chatId, "⚠️ Не получилось собрать договор. Напишите /new, чтобы попробовать заново.");
@@ -401,7 +417,7 @@ async function finalizeGibddForm(chatId, session) {
     await sendDocument(
       chatId,
       gibddBuffer,
-      "zayavlenie_gibdd.docx",
+      "Заявление в ГИБДД.docx",
       "🚦 <b>Заявление в ГИБДД</b>\nОсновные данные заполнены автоматически. От руки впишите: наименование подразделения, при желании e-mail, а дату и подпись — прямо при подаче."
     );
   } catch (e) {
@@ -548,6 +564,30 @@ async function handleUpdate(body) {
       return;
     }
 
+    if (cq.data === "menu_minimum") {
+      await answerCallbackQuery(cq.id);
+      await editMessageReplyMarkup(chatId, cq.message.message_id, { inline_keyboard: [] });
+      let engine = pristavSessions.get(chatId);
+      if (!engine) {
+        engine = newPristavEngine();
+        pristavSessions.set(chatId, engine);
+      }
+      await renderPristavStep(chatId, engine, pristavDeps);
+      return;
+    }
+
+    if (cq.data === "menu_cancelorder") {
+      await answerCallbackQuery(cq.id);
+      await editMessageReplyMarkup(chatId, cq.message.message_id, { inline_keyboard: [] });
+      let engine = cancelOrderSessions.get(chatId);
+      if (!engine) {
+        engine = newCancelOrderEngine();
+        cancelOrderSessions.set(chatId, engine);
+      }
+      await renderCancelOrderStep(chatId, engine, cancelOrderDeps);
+      return;
+    }
+
     // Если у чата уже идёт сценарий банкротства — все остальные нажатия
     // (варианты ответа, "пропустить", "ввести вручную", "готово",
     // выбор управляющего из готового списка и т.п.) разбираем здесь же,
@@ -590,6 +630,17 @@ async function handleUpdate(body) {
       return;
     }
 
+    if (pristavSessions.has(chatId)) {
+      await answerCallbackQuery(cq.id);
+      await editMessageReplyMarkup(chatId, cq.message.message_id, { inline_keyboard: [] });
+      const engine = pristavSessions.get(chatId);
+      if (cq.data.startsWith("opt:")) {
+        await handlePristavAction(chatId, engine, { payload: cq.data.slice(4) }, pristavDeps);
+      }
+      if (engine.isFinished()) pristavSessions.delete(chatId);
+      return;
+    }
+
     await handleCallbackQuery(cq);
     return;
   }
@@ -607,6 +658,8 @@ async function handleUpdate(body) {
     sessions.delete(chatId);
     bankruptcySessions.delete(chatId);
     rentalSessions.delete(chatId);
+    pristavSessions.delete(chatId);
+    cancelOrderSessions.delete(chatId);
     await sendMessage(chatId, "👋 Какой документ хотите сформировать?", CATEGORY_KEYBOARD);
     return;
   }
@@ -633,10 +686,30 @@ async function handleUpdate(body) {
     await renderRentalStep(chatId, engine, rentalDeps);
     return;
   }
+  if (text === "/minimum") {
+    let engine = pristavSessions.get(chatId);
+    if (!engine) {
+      engine = newPristavEngine();
+      pristavSessions.set(chatId, engine);
+    }
+    await renderPristavStep(chatId, engine, pristavDeps);
+    return;
+  }
+  if (text === "/cancelorder") {
+    let engine = cancelOrderSessions.get(chatId);
+    if (!engine) {
+      engine = newCancelOrderEngine();
+      cancelOrderSessions.set(chatId, engine);
+    }
+    await renderCancelOrderStep(chatId, engine, cancelOrderDeps);
+    return;
+  }
   if (text === "/reset") {
     sessions.delete(chatId);
     bankruptcySessions.delete(chatId);
     rentalSessions.delete(chatId);
+    pristavSessions.delete(chatId);
+    cancelOrderSessions.delete(chatId);
     await sendMessage(chatId, "🔄 Сброшено. Напишите /new, чтобы начать заново.");
     return;
   }
@@ -671,6 +744,28 @@ async function handleUpdate(body) {
       await handleRentalAction(chatId, engine, { type: "text", payload: text }, rentalDeps);
     }
     if (engine.isFinished()) rentalSessions.delete(chatId);
+    return;
+  }
+
+  if (pristavSessions.has(chatId)) {
+    const engine = pristavSessions.get(chatId);
+    if (msg.photo) {
+      await handlePristavAction(chatId, engine, { type: "photo", payload: msg.photo }, pristavDeps);
+    } else if (text) {
+      await handlePristavAction(chatId, engine, { type: "text", payload: text }, pristavDeps);
+    }
+    if (engine.isFinished()) pristavSessions.delete(chatId);
+    return;
+  }
+
+  if (cancelOrderSessions.has(chatId)) {
+    const engine = cancelOrderSessions.get(chatId);
+    if (msg.photo) {
+      await handleCancelOrderAction(chatId, engine, { type: "photo", payload: msg.photo }, cancelOrderDeps);
+    } else if (text) {
+      await handleCancelOrderAction(chatId, engine, { type: "text", payload: text }, cancelOrderDeps);
+    }
+    if (engine.isFinished()) cancelOrderSessions.delete(chatId);
     return;
   }
 

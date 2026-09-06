@@ -1,0 +1,63 @@
+{
+  "flowId": "pristav-minimum",
+  "title": "Заявление приставам о сохранении прожиточного минимума",
+  "start": "pm_passport",
+  "nodes": {
+
+    "pm_passport": {
+      "type": "upload",
+      "title": "Загрузите паспорт (разворот с фото)",
+      "docType": "passport_main",
+      "next": "pm_registration"
+    },
+    "pm_registration": {
+      "type": "upload",
+      "title": "Теперь разворот паспорта со штампом регистрации",
+      "docType": "passport_registration",
+      "next": "pm_osp_name"
+    },
+
+    "pm_osp_name": {
+      "type": "text_input",
+      "title": "Название и адрес отдела судебных приставов (ОСП), который ведёт ваше дело (можно посмотреть в постановлении пристава или в личном кабинете на Госуслугах)",
+      "storeAs": "ospName",
+      "next": "pm_case_number"
+    },
+    "pm_case_number": {
+      "type": "text_input",
+      "title": "Номер исполнительного производства (если не знаете — напишите «не знаю»)",
+      "storeAs": "caseNumber",
+      "next": "pm_dependents_question"
+    },
+
+    "pm_dependents_question": {
+      "type": "question",
+      "title": "Есть ли у вас иждивенцы — несовершеннолетние дети или нетрудоспособные родственники на вашем содержании?",
+      "options": ["да", "нет"],
+      "storeAs": "hasDependents",
+      "storeMap": { "да": true, "нет": false },
+      "next": { "да": "pm_dependents_info", "нет": "pm_account" }
+    },
+    "pm_dependents_info": {
+      "type": "text_input",
+      "title": "Сколько иждивенцев и кто они (например: двое несовершеннолетних детей)",
+      "storeAs": "dependentsInfo",
+      "next": "pm_account"
+    },
+
+    "pm_account": {
+      "type": "text_input",
+      "title": "Реквизиты счёта или карты, куда поступает ваш доход (банк и номер счёта/карты) — по этому счёту нужно сохранять прожиточный минимум",
+      "storeAs": "accountDetails",
+      "next": "pm_generate"
+    },
+
+    "pm_generate": {
+      "type": "generate",
+      "title": "Заявление о сохранении прожиточного минимума",
+      "template": "pristav_minimum",
+      "sourceFields": "*",
+      "next": null
+    }
+  }
+}

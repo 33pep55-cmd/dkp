@@ -650,7 +650,7 @@ async function handleUpdate(body) {
       await handleBankruptcyAction(chatId, engine, { type: "photo", payload: msg.photo }, bankruptcyDeps);
     } else if (msg.document) {
       await handleBankruptcyAction(chatId, engine, { type: "document", payload: msg.document }, bankruptcyDeps);
-    } else if (text && node.type === "collection" && engine.collectionAwaiting() === "item") {
+    } else if (text && ((node.type === "collection" && engine.collectionAwaiting() === "item") || node.type === "text_input")) {
       await handleBankruptcyAction(chatId, engine, { type: "text", payload: text }, bankruptcyDeps);
     } else if (text) {
       // Ручной ввод нескольких полей (например, данные СРО) — пока

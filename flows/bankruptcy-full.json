@@ -41,7 +41,25 @@
       "type": "question",
       "title": "Для банкротства ИП нужно закрыть. Подготовить заявление на закрытие ИП (форма Р26001) прямо сейчас?",
       "options": ["да, подготовить", "закрою сам"],
-      "next": { "да, подготовить": "ip_closure_generate", "закрою сам": "ip_status_cert" }
+      "next": { "да, подготовить": "ip_ogrnip", "закрою сам": "ip_status_cert" }
+    },
+    "ip_ogrnip": {
+      "type": "text_input",
+      "title": "Напишите ваш ОГРНИП (15 цифр — указан в свидетельстве о регистрации ИП или выписке из ЕГРИП)",
+      "storeAs": "ipOgrnip",
+      "next": "ip_phone"
+    },
+    "ip_phone": {
+      "type": "text_input",
+      "title": "Контактный телефон для налоговой (например: +7 900 123-45-67)",
+      "storeAs": "ipPhone",
+      "next": "ip_email"
+    },
+    "ip_email": {
+      "type": "text_input",
+      "title": "Адрес электронной почты — на него придёт ответ из налоговой",
+      "storeAs": "ipEmail",
+      "next": "ip_closure_generate"
     },
     "ip_closure_generate": {
       "type": "generate",

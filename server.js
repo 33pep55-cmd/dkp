@@ -614,6 +614,18 @@ async function handleUpdate(body) {
         // Выбор типа сделки за 3 года (недвижимость/авто/доли/иное) —
         // от этого зависит, каким способом распознавать сам документ.
         await handleBankruptcyAction(chatId, engine, { type: "dealtype", payload: data.slice(9) }, bankruptcyDeps);
+      } else if (data.startsWith("creditor_toggle:")) {
+        // Отметка/снятие отметки с конкретного кредитора при сверке
+        // списка из двух отчётов — см. узел creditors_review.
+        await handleBankruptcyAction(chatId, engine, { type: "toggle_creditor", index: Number(data.slice(16)) }, bankruptcyDeps);
+      } else if (data === "creditor_review_done") {
+        await handleBankruptcyAction(chatId, engine, { type: "confirm_review" }, bankruptcyDeps);
+      } else if (data.startsWith("creditor_pick:")) {
+        // Выбор одного из похожих вариантов при ручном вводе кредитора —
+        // см. pendingCreditor в bankruptcy-bot-handler.js.
+        await handleBankruptcyAction(chatId, engine, { type: "pick_creditor_candidate", index: Number(data.slice(14)) }, bankruptcyDeps);
+      } else if (data === "creditor_pick_none") {
+        await handleBankruptcyAction(chatId, engine, { type: "pick_creditor_candidate", index: -1 }, bankruptcyDeps);
       } else if (data === "back_bankrot") {
         // Кнопка "Назад" — присутствует на каждом шаге, откатывает
         // сценарий на один реальный шаг назад (пропуская служебные

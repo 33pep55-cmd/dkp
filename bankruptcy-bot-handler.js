@@ -333,23 +333,46 @@ async function handleAction(chatId, engine, action, deps) {
           const dealType = engine.collectionState?.dealType;
           if (node.collectionKey === "creditors") {
             const { name, amount } = parseManualCreditorText(action.payload);
-            const { findByName } = await import("./cbr-bank-lookup.mjs");
+            const { findByName, searchByName } = await import("./cbr-bank-lookup.mjs");
             const found = findByName(name);
-            engine.submitCollectionItem({
-              creditorName: found ? found.name : name,
-              creditorAddress: found ? found.address : undefined,
-              totalDebt: amount ? `${amount} ₽` : undefined,
-              enteredManually: true,
-              raw: action.payload,
-            });
             if (found) {
+              engine.submitCollectionItem({
+                creditorName: found.name, creditorAddress: found.address,
+                totalDebt: amount ? `${amount} ₽` : undefined,
+                enteredManually: true, raw: action.payload,
+              });
               await deps.sendMessage(chatId, `✅ Нашли в реестре: ${found.name}\nАдрес: ${found.address}`);
             } else {
-              await deps.sendMessage(chatId, `ℹ️ «${name}» не нашёлся в реестре банков/МФО — добавлено как есть, адрес можно будет уточнить отдельно.`);
+              const candidates = searchByName(name);
+              if (candidates.length === 0) {
+                // Точного совпадения нет, и даже похожих вариантов не
+                // нашлось — добавляем как есть, без адреса.
+                engine.submitCollectionItem({ creditorName: name, totalDebt: amount ? `${amount} ₽` : undefined, enteredManually: true, raw: action.payload });
+                await deps.sendMessage(chatId, `ℹ️ «${name}» не нашёлся в реестре банков/МФО — добавлено как есть, адрес можно будет уточнить отдельно.`);
+              } else {
+                // Есть похожие варианты — показываем кнопками вместо того,
+                // чтобы либо угадывать, либо молча сдаваться.
+                engine.collectionState.pendingCreditor = { name, amount, raw: action.payload };
+                const rows = candidates.map((c, i) => [{ text: c.name, callback_data: `creditor_pick:${i}` }]);
+                rows.push([{ text: `Ни один — оставить как ввёл: «${name}»`, callback_data: "creditor_pick_none" }]);
+                await deps.sendMessage(chatId, `🔎 Нашлось похожее в реестре банков/МФО — это один из них?`, withBack({ inline_keyboard: rows }));
+                return;
+              }
             }
           } else {
             engine.submitCollectionItem({ raw: action.payload, enteredManually: true, ...(dealType ? { propertyType: dealType } : {}) });
           }
+        } else if (action.type === "pick_creditor_candidate") {
+          const { name, amount, raw } = engine.collectionState.pendingCreditor;
+          const { searchByName } = await import("./cbr-bank-lookup.mjs");
+          const candidates = searchByName(name);
+          const picked = action.index === -1 ? null : candidates[action.index];
+          engine.submitCollectionItem({
+            creditorName: picked ? picked.name : name,
+            creditorAddress: picked ? picked.address : undefined,
+            totalDebt: amount ? `${amount} ₽` : undefined,
+            enteredManually: true, raw,
+          });
         } else if (action.type === "skip") {
           engine.submitCollectionContinue(false);
         }

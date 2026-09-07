@@ -17,6 +17,26 @@ const path = require("path");
 const WizardEngine = require("../engine/wizard-engine.js");
 const realExtractFields = require("./claude.js").extractFields;
 const { generateBankruptcyApplication } = require("./bankruptcy-docx-builder.js");
+const { generateIpClosureApplication } = require("./ip-closure-docx-builder.js");
+
+// Промежуточные документы (не итоговое заявление) — раньше движок их
+// формировал внутри себя (generatedDocuments), но реально отправлял
+// только самый последний файл. Теперь каждый шаблон из этого списка
+// генерируется и отправляется человеку сразу же, как только становится
+// доступен, отдельным файлом.
+const INTERMEDIATE_GENERATORS = {
+  ip_closure_p26001: { fn: generateIpClosureApplication, filename: "Заявление на закрытие ИП (форма Р26001).docx", caption: "📄 Заявление на закрытие ИП (форма Р26001) готово. Лист 2 при подаче заполнит сотрудник ФНС/МФЦ — самостоятельно его заполнять не нужно." },
+};
+
+async function sendIntermediateDocuments(chatId, engine, deps, beforeCount) {
+  const newDocs = engine.generatedDocuments.slice(beforeCount);
+  for (const doc of newDocs) {
+    const gen = INTERMEDIATE_GENERATORS[doc.template];
+    if (!gen) continue; // мировое соглашение / аренда — пока заглушки, для них отдельного файла ещё нет
+    const buffer = await gen.fn(doc.dataSnapshot);
+    await deps.sendDocument(chatId, buffer, gen.filename, gen.caption);
+  }
+}
 
 const FLOW_PATH = path.join(__dirname, "..", "flows", "bankruptcy-full.json");
 
@@ -57,6 +77,21 @@ async function parseCreditReportDocument(buffer, fileName) {
   }
 }
 
+// Показываем распознанных кредиторов отдельным сообщением сразу после
+// разбора отчёта — чтобы человек мог сверить со своей реальной ситуацией
+// ещё до того, как решать, кого добавлять вручную.
+async function sendCreditorsSummary(chatId, creditors, deps) {
+  if (creditors.length === 0) {
+    await deps.sendMessage(chatId, "ℹ️ В этом отчёте кредиторов не найдено.");
+    return;
+  }
+  const lines = creditors.map((c, i) => {
+    const debt = c.totalDebt ? String(c.totalDebt).trim() : "сумма не указана";
+    return `${i + 1}. ${c.creditorName || "—"} — ${debt}`;
+  });
+  await deps.sendMessage(chatId, `✅ Распознано кредиторов: ${creditors.length}\n\n${lines.join("\n")}\n\nПроверьте, всё ли совпадает с реальной ситуацией — недостающих можно будет добавить вручную на следующем шаге.`);
+}
+
 // Те же самые картинки-подсказки, что уже работают в сценарии ДКП —
 // документы совпадают (паспорт, СНИЛС, ИНН, СТС/ПТС), так что отдельно
 // рисовать ничего не нужно, только переиспользовать по docType.
@@ -79,15 +114,22 @@ const GUIDE_ASSETS = {
 // Явная подсказка про скрепку — иначе взгляд тянется только к видимой
 // кнопке "Пропустить", а как прикрепить сам файл, не всегда очевидно.
 const ATTACH_HINT =
-  "\n\nНажмите на значок скрепки 📎 рядом с полем ввода и прикрепите фото документа.\n" +
+  "\n\nНажмите на значок скрепки 📎 рядом с полем ввода и прикрепите документ — подойдёт и фото/скриншот, и PDF-файл.\n" +
+  "Если документа нет под рукой — нажмите «Пропустить» ниже.";
+// Для документов, которые часто бывают на нескольких страницах (договор
+// аренды и т.п.) — если есть PDF, лучше прислать именно его целиком
+// (тогда прочитаются все страницы сразу), а не фото одной страницы.
+const ATTACH_HINT_MULTIPAGE =
+  "\n\nЕсли документ есть в виде PDF-файла — пришлите его через скрепку 📎 (выберите «Файл»): так прочитаются сразу все страницы.\n" +
+  "Если PDF нет — сфотографируйте (или сделайте скриншот) ту страницу, где видны нужные данные (адрес и сторона по договору), этого достаточно.\n" +
   "Если документа нет под рукой — нажмите «Пропустить» ниже.";
 const ATTACH_HINT_COLLECTION =
-  "\n\nНажмите на значок скрепки 📎 рядом с полем ввода, чтобы прикрепить фото.\n" +
+  "\n\nНажмите на значок скрепки 📎 рядом с полем ввода — подойдёт и фото/скриншот, и PDF-файл.\n" +
   "Если добавлять больше нечего — нажмите «Готово» ниже.";
-// Отдельная подсказка для отчётов — это PDF-файл, а не фото, поэтому
-// в меню скрепки нужно выбрать именно "Файл", а не "Фото или видео".
+// Отдельная подсказка для кредитных отчётов — это ВСЕГДА PDF-файл, там
+// нет варианта прислать фото (обычно отчёт скачивается уже в PDF).
 const ATTACH_HINT_FILE =
-  "\n\nЭто PDF-файл, а не фото. Нажмите на скрепку 📎 рядом с полем ввода, выберите «Файл» (не «Фото или видео») и прикрепите отчёт.\n" +
+  "\n\nЭто PDF-файл. Нажмите на скрепку 📎 рядом с полем ввода, выберите «Файл» (не «Фото или видео») и прикрепите отчёт.\n" +
   "Если отчёта нет под рукой — нажмите «Пропустить» ниже.";
 
 function newEngine() {
@@ -114,25 +156,26 @@ async function renderCurrentStep(chatId, engine, deps) {
     const node = engine.currentNode();
 
     if (node.type === "message") {
-      await deps.sendMessage(chatId, `ℹ️ ${node.title}\n\n${node.body}`, ackKeyboard(node.ackLabel));
+      await deps.sendMessage(chatId, `ℹ️ ${node.title}\n\n${node.body}`, withBack(ackKeyboard(node.ackLabel)));
       return;
     }
 
     if (node.type === "upload") {
       const isFileUpload = node.docType === "credit_report";
-      const hint = isFileUpload ? ATTACH_HINT_FILE : ATTACH_HINT;
+      const MULTIPAGE_DOCTYPES = new Set(["rent_agreement", "mortgage_documents", "marriage_contract"]);
+      const hint = isFileUpload ? ATTACH_HINT_FILE : MULTIPAGE_DOCTYPES.has(node.docType) ? ATTACH_HINT_MULTIPAGE : ATTACH_HINT;
       const caption = `📎 ${node.title}${hint}`;
       const asset = GUIDE_ASSETS[node.docType];
       if (asset && deps.sendGuideAnimation) {
-        await deps.sendGuideAnimation(chatId, asset, caption, skipKeyboard(node));
+        await deps.sendGuideAnimation(chatId, asset, caption, withBack(skipKeyboard(node)));
       } else {
-        await deps.sendMessage(chatId, caption, skipKeyboard(node));
+        await deps.sendMessage(chatId, caption, withBack(skipKeyboard(node)));
       }
       return;
     }
 
     if (node.type === "question") {
-      await deps.sendMessage(chatId, `❓ ${node.title}`, optionsKeyboard(node.options));
+      await deps.sendMessage(chatId, `❓ ${node.title}`, withBack(optionsKeyboard(node.options)));
       return;
     }
 
@@ -143,33 +186,60 @@ async function renderCurrentStep(chatId, engine, deps) {
         // сделки за 3 года) и тип для текущего пункта ещё не выбран —
         // сначала спрашиваем именно это, до всякой загрузки.
         if (node.itemTypeOptions && !engine.collectionState?.dealType) {
-          await deps.sendMessage(chatId, `❓ ${node.itemPrompt}`, dealTypeKeyboard(node.itemTypeOptions));
+          await deps.sendMessage(chatId, `❓ ${node.itemPrompt}`, withBack(dealTypeKeyboard(node.itemTypeOptions)));
           return;
         }
 
         const itemDocType = node.itemDocType || DEAL_TYPE_TO_DOCTYPE[engine.collectionState?.dealType];
-        const caption = itemDocType
-          ? `📎 Загрузите документ по сделке${ATTACH_HINT_COLLECTION}`
-          : `✍️ Опишите сделку своими словами одним сообщением — этот тип не распознаётся по фото.\n\nЕсли добавлять больше нечего — нажмите «Готово» ниже.`;
+        const isDealsWithoutOcr = node.itemTypeOptions && !itemDocType;
+        const caption = isDealsWithoutOcr
+          ? `✍️ Опишите сделку своими словами одним сообщением — этот тип не распознаётся по фото.\n\nЕсли добавлять больше нечего — нажмите «Готово» ниже.`
+          : `📎 ${node.itemPrompt}${ATTACH_HINT_COLLECTION}`;
         const asset = GUIDE_ASSETS[itemDocType];
         if (asset && deps.sendGuideAnimation) {
-          await deps.sendGuideAnimation(chatId, asset, caption, collectionItemKeyboard());
+          await deps.sendGuideAnimation(chatId, asset, caption, withBack(collectionItemKeyboard()));
         } else {
-          await deps.sendMessage(chatId, caption, collectionItemKeyboard());
+          await deps.sendMessage(chatId, caption, withBack(collectionItemKeyboard()));
         }
       } else {
-        await deps.sendMessage(chatId, `❓ ${node.addMorePrompt}`, optionsKeyboard(["да", "нет"]));
+        await deps.sendMessage(chatId, `❓ ${node.addMorePrompt}`, withBack(optionsKeyboard(["да", "нет"])));
       }
+      return;
+    }
+
+    if (node.type === "creditors_review") {
+      const creditors = engine.collectedData.creditors || [];
+      if (creditors.length === 0) {
+        // Нечего сверять — оба отчёта либо не загружались, либо не дали
+        // ни одного кредитора. Пропускаем шаг молча, не показывая
+        // пустой список для галочки.
+        engine.advance(node.next);
+        return renderCurrentStep(chatId, engine, deps);
+      }
+      // По умолчанию все найденные кредиторы отмечены — человек снимает
+      // галочку с тех, что задвоились между двумя отчётами или лишние.
+      creditors.forEach(c => { if (c.selected === undefined) c.selected = true; });
+      const rows = creditors.map((c, i) => [{
+        text: `${c.selected ? "✅" : "⬜️"} ${c.creditorName || "—"} — ${c.totalDebt || "?"}`,
+        callback_data: `creditor_toggle:${i}`,
+      }]);
+      rows.push([{ text: "✅ Готово, отметил(а) всё", callback_data: "creditor_review_done", style: "success" }]);
+      await deps.sendMessage(chatId, "🔎 Проверьте кредиторов, найденных в обоих отчётах — один и тот же кредит мог попасть в оба отчёта сразу. Снимите галочку с задвоившихся или лишних пунктов, затем нажмите «Готово».", withBack({ inline_keyboard: rows }));
       return;
     }
 
     if (node.type === "manual_input") {
       if (node.presetSource) {
         const presets = loadPresets(node.presetSource);
-        await deps.sendMessage(chatId, `👤 ${node.title}`, presetKeyboard(presets));
+        await deps.sendMessage(chatId, `👤 ${node.title}`, withBack(presetKeyboard(presets)));
         return;
       }
-      await deps.sendMessage(chatId, `✍️ ${node.title}\nПоля: ${node.fields.join(", ")}`);
+      await deps.sendMessage(chatId, `✍️ ${node.title}\nПоля: ${node.fields.join(", ")}`, withBack({ inline_keyboard: [] }));
+      return;
+    }
+
+    if (node.type === "text_input") {
+      await deps.sendMessage(chatId, `✍️ ${node.title}`, withBack({ inline_keyboard: [] }));
       return;
     }
 
@@ -182,7 +252,7 @@ async function renderCurrentStep(chatId, engine, deps) {
 
 async function finalize(chatId, engine, deps) {
   const buffer = await generateBankruptcyApplication(engine.collectedData);
-  await deps.sendDocument(chatId, buffer, "zayavlenie_bankrotstvo.docx",
+  await deps.sendDocument(chatId, buffer, "Заявление о банкротстве физического лица.docx",
     "📄 Черновик заявления о банкротстве готов. Обязательно проверьте все данные перед подачей в суд.");
 
   // Отдельное предложение — специально после основного документа, а не
@@ -197,6 +267,7 @@ async function finalize(chatId, engine, deps) {
 
 async function handleAction(chatId, engine, action, deps) {
   const node = engine.currentNode();
+  const docsCountBefore = engine.generatedDocuments.length;
 
   try {
     if (node.type === "message") {
@@ -214,11 +285,18 @@ async function handleAction(chatId, engine, action, deps) {
         const { buffer, fileName } = await deps.downloadDocument(action.payload);
         const creditors = await parseCreditReportDocument(buffer, fileName);
         engine.submitUpload(creditors); // node.collectionKey === "creditors" — массив уйдёт туда
+        await sendCreditorsSummary(chatId, creditors, deps);
       } else if (action.type === "document") {
-        // PDF/файл прислали не туда, где мы умеем его разобрать (не отчёт) —
-        // просим прислать именно фото, а не молчим.
-        await deps.sendMessage(chatId, "⚠️ Здесь нужно фото документа, а не файл. Нажмите на скрепку 📎 и выберите «Фото или видео», либо просто сфотографируйте документ.");
-        return;
+        // PDF для обычного документа (не отчёта) — раньше это отклонялось
+        // с просьбой прислать именно фото, теперь распознаём напрямую,
+        // тем же промптом, что и для фото, просто как PDF-документ.
+        const { buffer } = await deps.downloadDocument(action.payload);
+        const fields = await (deps.extractFields || realExtractFields)(node.docType, buffer.toString("base64"), "application/pdf");
+        if (node.collectionKey) {
+          engine.submitUpload(Array.isArray(fields) ? fields : [fields]);
+        } else {
+          engine.submitUpload(fields);
+        }
       } else if (action.type === "skip") {
         // Для шагов с collectionKey (отчёты -> общий список кредиторов)
         // пропуск должен значить "ничего не добавляем", а не "добавить
@@ -235,23 +313,61 @@ async function handleAction(chatId, engine, action, deps) {
         engine.collectionState.dealType = action.payload;
       } else if (awaiting === "item") {
         const itemDocType = node.itemDocType || DEAL_TYPE_TO_DOCTYPE[engine.collectionState?.dealType];
-        if (action.type === "photo") {
+        if (action.type === "photo" || action.type === "document") {
           if (!itemDocType) {
-            await deps.sendMessage(chatId, "✍️ Для этого типа сделки нужно текстовое описание, а не фото — опишите её одним сообщением.");
+            await deps.sendMessage(chatId, "✍️ Для этого типа сделки нужно текстовое описание, а не файл — опишите её одним сообщением.");
             return;
           }
-          const { base64, mimeType } = await deps.downloadLargestPhoto(action.payload);
+          let base64, mimeType;
+          if (action.type === "photo") {
+            ({ base64, mimeType } = await deps.downloadLargestPhoto(action.payload));
+          } else {
+            const { buffer } = await deps.downloadDocument(action.payload);
+            base64 = buffer.toString("base64");
+            mimeType = "application/pdf";
+          }
           const fields = await (deps.extractFields || realExtractFields)(itemDocType, base64, mimeType);
           const dealType = engine.collectionState?.dealType;
           engine.submitCollectionItem(dealType ? { ...fields, propertyType: dealType } : fields);
         } else if (action.type === "text") {
           const dealType = engine.collectionState?.dealType;
-          engine.submitCollectionItem({ raw: action.payload, enteredManually: true, ...(dealType ? { propertyType: dealType } : {}) });
+          if (node.collectionKey === "creditors") {
+            const { name, amount } = parseManualCreditorText(action.payload);
+            const { findByName } = await import("./cbr-bank-lookup.mjs");
+            const found = findByName(name);
+            engine.submitCollectionItem({
+              creditorName: found ? found.name : name,
+              creditorAddress: found ? found.address : undefined,
+              totalDebt: amount ? `${amount} ₽` : undefined,
+              enteredManually: true,
+              raw: action.payload,
+            });
+            if (found) {
+              await deps.sendMessage(chatId, `✅ Нашли в реестре: ${found.name}\nАдрес: ${found.address}`);
+            } else {
+              await deps.sendMessage(chatId, `ℹ️ «${name}» не нашёлся в реестре банков/МФО — добавлено как есть, адрес можно будет уточнить отдельно.`);
+            }
+          } else {
+            engine.submitCollectionItem({ raw: action.payload, enteredManually: true, ...(dealType ? { propertyType: dealType } : {}) });
+          }
         } else if (action.type === "skip") {
           engine.submitCollectionContinue(false);
         }
       } else {
         engine.submitCollectionContinue(action.payload === "да");
+      }
+    } else if (node.type === "creditors_review") {
+      if (action.type === "toggle_creditor") {
+        const creditors = engine.collectedData.creditors || [];
+        const item = creditors[action.index];
+        if (item) item.selected = !item.selected;
+      } else if (action.type === "confirm_review") {
+        // Оставляем только отмеченные, снимаем служебное поле selected —
+        // дальше по коду (и в итоговом документе) оно не нужно.
+        engine.collectedData.creditors = (engine.collectedData.creditors || [])
+          .filter(c => c.selected !== false)
+          .map(({ selected, ...rest }) => rest);
+        engine.advance(node.next);
       }
     } else if (node.type === "manual_input") {
       if (node.presetSource && action.type === "preset") {
@@ -267,6 +383,8 @@ async function handleAction(chatId, engine, action, deps) {
       } else if (!node.presetSource) {
         engine.submitManualInput(action.payload);
       }
+    } else if (node.type === "text_input" && action.type === "text") {
+      engine.submitTextInput(action.payload);
     }
   } catch (e) {
     // Любая непредвиденная ошибка (сбой распознавания, недоступность
@@ -284,16 +402,44 @@ async function handleAction(chatId, engine, action, deps) {
     return;
   }
 
+  await sendIntermediateDocuments(chatId, engine, deps, docsCountBefore);
   await renderCurrentStep(chatId, engine, deps);
 }
 
 // ---- Вспомогательные клавиатуры ----
+// Цвет кнопки — появился только в Bot API 9.4 (февраль 2026): "primary"
+// (синий), "success" (зелёный), "danger" (красный). Для остальных
+// вариантов ответа цвет не задаём — пусть остаются нейтральными.
+const OPTION_STYLES = { "да": "success", "нет": "danger" };
+
 function optionsKeyboard(options) {
-  return { inline_keyboard: [options.map(o => ({ text: o, callback_data: `opt:${o}` }))] };
+  return { inline_keyboard: [options.map(o => {
+    const btn = { text: o, callback_data: `opt:${o}` };
+    if (OPTION_STYLES[o.toLowerCase()]) btn.style = OPTION_STYLES[o.toLowerCase()];
+    return btn;
+  })] };
 }
+// Добавляет отдельной строкой кнопку "на шаг назад" к любой клавиатуре —
+// позволяет вернуться к предыдущему шагу и исправить ответ, не начиная
+// сценарий заново.
+function withBack(keyboard) {
+  return { inline_keyboard: [...keyboard.inline_keyboard, [{ text: "⬅️ Назад", callback_data: "back_bankrot", style: "primary" }]] };
+}
+
 function skipKeyboard() {
   return { inline_keyboard: [[{ text: "⏭ Пропустить (нет документа)", callback_data: "skip" }]] };
 }
+// Разбирает свободный текст вида "Тинькофф Банк, 50000" на название и
+// сумму — сумма ищется как последнее число в сообщении, всё, что до
+// него, считается названием кредитора.
+function parseManualCreditorText(raw) {
+  const match = raw.match(/(\d[\d\s]{0,12}\d|\d)\s*(?:руб\.?|₽)?\s*$/);
+  if (!match) return { name: raw.trim(), amount: null };
+  const amount = match[1].replace(/\s+/g, "");
+  const name = raw.slice(0, match.index).replace(/[,;\s]+$/, "").trim();
+  return { name: name || raw.trim(), amount };
+}
+
 function dealTypeKeyboard(options) {
   return { inline_keyboard: options.map(o => [{ text: o, callback_data: `dealtype:${o}` }]) };
 }
@@ -305,7 +451,7 @@ function collectionItemKeyboard() {
   return { inline_keyboard: [[{ text: "⏭ Пропустить (документа нет)", callback_data: "skip" }]] };
 }
 function ackKeyboard(label) {
-  return { inline_keyboard: [[{ text: label || "Понятно, дальше", callback_data: "ack" }]] };
+  return { inline_keyboard: [[{ text: label || "Понятно, дальше", callback_data: "ack", style: "success" }]] };
 }
 function presetKeyboard(presets) {
   const rows = presets.map((p, i) => [{ text: p.label, callback_data: `preset:${i}` }]);

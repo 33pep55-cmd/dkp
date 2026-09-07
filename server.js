@@ -13,6 +13,8 @@ const {
   newEngine: newBankruptcyEngine,
   renderCurrentStep: renderBankruptcyStep,
   handleAction: handleBankruptcyAction,
+  buildCreditorsReviewKeyboard,
+  withBack,
 } = require("./lib/bankruptcy-bot-handler");
 const {
   newEngine: newRentalEngine,
@@ -593,10 +595,24 @@ async function handleUpdate(body) {
     // выбор управляющего из готового списка и т.п.) разбираем здесь же,
     // отдельно от кнопок ДКП.
     if (bankruptcySessions.has(chatId)) {
-      await answerCallbackQuery(cq.id);
-      await editMessageReplyMarkup(chatId, cq.message.message_id, { inline_keyboard: [] });
       const engine = bankruptcySessions.get(chatId);
       const data = cq.data;
+
+      if (data.startsWith("creditor_toggle:")) {
+        // Особый случай: переключение галочки должно обновлять ТО ЖЕ
+        // САМОЕ сообщение на месте, а не стирать его кнопки и слать новое
+        // ниже — иначе при каждом нажатии в чате копится ещё один список,
+        // и непонятно, какой из них актуальный.
+        await answerCallbackQuery(cq.id);
+        const creditors = engine.collectedData.creditors || [];
+        const item = creditors[Number(data.slice(16))];
+        if (item) item.selected = !item.selected;
+        await editMessageReplyMarkup(chatId, cq.message.message_id, withBack(buildCreditorsReviewKeyboard(creditors)));
+        return;
+      }
+
+      await answerCallbackQuery(cq.id);
+      await editMessageReplyMarkup(chatId, cq.message.message_id, { inline_keyboard: [] });
 
       if (data === "ack") {
         await handleBankruptcyAction(chatId, engine, { type: "ack" }, bankruptcyDeps);
@@ -614,10 +630,6 @@ async function handleUpdate(body) {
         // Выбор типа сделки за 3 года (недвижимость/авто/доли/иное) —
         // от этого зависит, каким способом распознавать сам документ.
         await handleBankruptcyAction(chatId, engine, { type: "dealtype", payload: data.slice(9) }, bankruptcyDeps);
-      } else if (data.startsWith("creditor_toggle:")) {
-        // Отметка/снятие отметки с конкретного кредитора при сверке
-        // списка из двух отчётов — см. узел creditors_review.
-        await handleBankruptcyAction(chatId, engine, { type: "toggle_creditor", index: Number(data.slice(16)) }, bankruptcyDeps);
       } else if (data === "creditor_review_done") {
         await handleBankruptcyAction(chatId, engine, { type: "confirm_review" }, bankruptcyDeps);
       } else if (data.startsWith("creditor_pick:")) {
